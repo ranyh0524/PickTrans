@@ -1,0 +1,124 @@
+"""OCR 框选遮罩：全屏半透明蒙层，按住拖拽框选要识别的区域。"""
+import os
+
+from PyQt6.QtCore import Qt, QRect, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QPainter, QGuiApplication
+from PyQt6.QtWidgets import QLabel, QRubberBand, QWidget
+
+DEBUG = os.environ.get("POPTRANS_DEBUG") == "1"
+
+MIN_REGION = 8  # 小于该尺寸视为误操作，直接取消
+
+HINT = "按住左键拖拽，框选要翻译的文字区域；按 Esc 取消"
+
+
+def _virtual_geometry() -> QRect:
+    """所有屏幕的并集（虚拟桌面），多显示器时蒙层需覆盖副屏。"""
+    screens = QGuiApplication.screens()
+    if not screens:
+        return QRect(0, 0, 1920, 1080)
+    geo = QRect(screens[0].geometry())
+    for s in screens[1:]:
+        geo = geo.united(s.geometry())
+    return geo
+
+
+class OcrSelector(QWidget):
+    # 全局屏幕坐标下的选区（物理像素）
+    regionSelected = pyqtSignal(int, int, int, int)
+
+    def __init__(self):
+        super().__init__(
+            None,
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.Tool
+            | Qt.WindowType.WindowStaysOnTopHint,
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+        self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.CrossCursor)
+
+        self.setGeometry(_virtual_geometry())
+
+        self._origin = None
+        self._rubber = QRubberBand(QRubberBand.Shape.Rectangle, self)
+        self._rubber.setStyleSheet(
+            "QRubberBand { border: 1px solid #4059E8; background: rgba(64, 89, 232, 24); }"
+        )
+
+        self._hint = QLabel(HINT, self)
+        self._hint.setStyleSheet(
+            "QLabel {"
+            " background: rgba(30, 33, 46, 190); color: #FFFFFF; font-size: 13px;"
+            " border-radius: 8px; padding: 7px 18px; border: 1px solid rgba(255,255,255,50);"
+            "}"
+        )
+        self._hint.adjustSize()
+        self._hint.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._place_hint()
+
+    # ---------- 生命周期 ----------
+
+    def start(self):
+        self._origin = None
+        self._rubber.hide()
+        self.setGeometry(_virtual_geometry())
+        self._place_hint()
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _place_hint(self):
+        """提示放在主屏顶部中央（蒙层可能横跨多个屏幕，并集中心可能落在屏缝上）。"""
+        screen = QGuiApplication.primaryScreen()
+        geo = screen.geometry() if screen else QRect(self.rect())
+        x = geo.center().x() - self._hint.width() // 2 - self.x()
+        self._hint.move(x, geo.top() + 36 - self.y())
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            self._finish(None)
+        super().keyPressEvent(event)
+
+    # ---------- 框选交互 ----------
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._origin = event.position().toPoint()
+            self._rubber.setGeometry(QRect(self._origin, self._origin))
+            self._rubber.show()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._origin is not None:
+            self._rubber.setGeometry(QRect(self._origin, event.position().toPoint()).normalized())
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._origin is not None:
+            rect = self._rubber.geometry()
+            self._origin = None
+            self._rubber.hide()
+            if rect.width() < MIN_REGION or rect.height() < MIN_REGION:
+                self._finish(None)
+                return
+            # 先隐藏蒙层，稍等一帧再截图，避免把蒙层拍进去
+            self.hide()
+            QTimer.singleShot(160, lambda: self._finish(rect))
+        super().mouseReleaseEvent(event)
+
+    def _finish(self, rect):
+        self.hide()
+        if rect is None:
+            return
+        gx = self.x() + rect.x()
+        gy = self.y() + rect.y()
+        self.regionSelected.emit(gx, gy, rect.width(), rect.height())
+
+    # ---------- 绘制 ----------
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(10, 12, 20, 70))
+        super().paintEvent(event)
