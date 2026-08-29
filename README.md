@@ -1,19 +1,19 @@
 <div align="center">
 
-<img src="assets/icon.png" width="110" alt="PopTrans">
+<img src="assets/icon.png" width="110" alt="PickTrans">
 
-# PopTrans 划词翻译
+# PickTrans 划词翻译
 
 > 🌈 在任意 Windows 应用里选中文字，鼠标旁弹出「译」按钮，点击即流式显示大模型翻译
 
-[![Release](https://img.shields.io/github/v/release/ranyh0524/PopTrans)](https://github.com/ranyh0524/PopTrans/releases)
-[![Stars](https://img.shields.io/github/stars/ranyh0524/PopTrans?style=flat)](https://github.com/ranyh0524/PopTrans/stargazers)
+[![Release](https://img.shields.io/github/v/release/ranyh0524/PickTrans)](https://github.com/ranyh0524/PickTrans/releases)
+[![Stars](https://img.shields.io/github/stars/ranyh0524/PickTrans?style=flat)](https://github.com/ranyh0524/PickTrans/stargazers)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2B-blue)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![LLM](https://img.shields.io/badge/LLM-OpenAI%20Compatible-8B5CF6)
 
-![PopTrans](docs/screenshot.png)
+![PickTrans](docs/screenshot.png)
 
 **[下载安装](#-下载安装) · [使用方式](#-使用方式) · [常见问题](#-常见问题) · [参与开发](#-开发)**
 
@@ -76,13 +76,13 @@
 aᵢ = σ(s_g[sg(Hᵢ⁽ᵍ⁾) − τ_g])
 ```
 
-复制出来往往变成 `ai = σ (sg [sg(Hg i ) − τg])`。PopTrans 会让大模型先按数学语义恢复上下标结构，译文中的公式以 LaTeX 书写，并在卡片里渲染回与论文一致的视觉形式。恢复依赖模型推理，极复杂的公式建议人工复核。
+复制出来往往变成 `ai = σ (sg [sg(Hg i ) − τg])`。PickTrans 会让大模型先按数学语义恢复上下标结构，译文中的公式以 LaTeX 书写，并在卡片里渲染回与论文一致的视觉形式。恢复依赖模型推理，极复杂的公式建议人工复核。
 
 ## 📦 下载安装
 
 **方式一：下载 exe（推荐）**
 
-到 [Releases](https://github.com/ranyh0524/PopTrans/releases) 下载 `PopTrans.exe`（单文件、免安装，Windows 10+）。
+到 [Releases](https://github.com/ranyh0524/PickTrans/releases) 下载 `PickTrans.exe`（单文件、免安装，Windows 10+）。
 
 **方式二：源码运行**
 
@@ -157,15 +157,15 @@ exe 未做代码签名，SmartScreen 会拦截未签名程序。点「更多信�
 
 设置界面覆盖：服务商预设 / API 地址 / 密钥 / 模型（可在线拉取模型列表）、翻译方向（自动互译或固定目标语言）、划词开关与热键、应用黑名单、OCR 开关与热键、卡片主题与译文字号、开机自启、自动复制译文、更新地址。
 
-配置文件位于 `%APPDATA%\PopTrans\config.json`。
+配置文件位于 `%APPDATA%\PickTrans\config.json`。
 
 ## 🛠️ 开发
 
-欢迎提 [Issue](https://github.com/ranyh0524/PopTrans/issues) 反馈 bug 与功能建议，PR 同样欢迎。
+欢迎提 [Issue](https://github.com/ranyh0524/PickTrans/issues) 反馈 bug 与功能建议，PR 同样欢迎。
 
 ```bat
 :: 调试启动（输出调试日志）
-set POPTRANS_DEBUG=1 && python main.py
+set PICKTRANS_DEBUG=1 && python main.py
 
 :: 本地 mock 大模型（无需真实 key 做端到端调试）http://127.0.0.1:8765/v1
 python tools/mock_llm.py
@@ -176,11 +176,11 @@ python tools/e2e_click.py word
 :: UI 组件离线自测（渲染 + 交互断言）
 python tools/ui_selftest.py
 
-:: 打包单文件 exe（产物 dist\PopTrans.exe）
+:: 打包单文件 exe（产物 dist\PickTrans.exe）
 build.bat
 ```
 
-**发布新版本**：修改 `app/config.py` 的 `APP_VERSION` → `build.bat` 打包 → 将 `dist/PopTrans.exe` 与 `version.json` 上传到任意静态托管（清单格式 `{"version": "1.1.0", "url": "https://.../PopTrans.exe", "notes": "更新说明"}`）→ 配置了更新地址的用户启动时会自动收到新版本提示。
+**发布新版本**：修改 `app/config.py` 的 `APP_VERSION` → `build.bat` 打包 → 将 `dist/PickTrans.exe` 与 `version.json` 上传到任意静态托管（清单格式 `{"version": "1.1.0", "url": "https://.../PickTrans.exe", "notes": "更新说明"}`）→ 配置了更新地址的用户启动时会自动收到新版本提示。
 
 <details>
 <summary><b>项目结构</b></summary>
@@ -234,11 +234,11 @@ tools/
 
 ## ⭐ Star History
 
-<a href="https://www.star-history.com/#ranyh0524/PopTrans&Date">
+<a href="https://www.star-history.com/#ranyh0524/PickTrans&Date">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=ranyh0524/PopTrans&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=ranyh0524/PopTrans&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=ranyh0524/PopTrans&type=Date" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=ranyh0524/PickTrans&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=ranyh0524/PickTrans&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=ranyh0524/PickTrans&type=Date" />
  </picture>
 </a>
 

@@ -1,4 +1,4 @@
-"""PopTrans 划词翻译入口。"""
+"""PickTrans 划词翻译入口。"""
 import ctypes
 import faulthandler
 import os
@@ -7,7 +7,7 @@ import threading
 
 # 原生崩溃时把线程栈打印到 stderr，便于定位。
 # --noconsole 打包后 sys.stderr 为 None，faulthandler.enable() 会直接抛
-# RuntimeError，此时改为把崩溃栈落盘到 %APPDATA%/PopTrans/crash.log
+# RuntimeError，此时改为把崩溃栈落盘到 %APPDATA%/PickTrans/crash.log
 if sys.stderr is not None:
     faulthandler.enable()
 else:
@@ -19,7 +19,7 @@ else:
     except Exception:
         pass
 
-DEBUG = os.environ.get("POPTRANS_DEBUG") == "1"
+DEBUG = os.environ.get("PICKTRANS_DEBUG") == "1"
 
 
 def _dlog(msg: str):
@@ -56,7 +56,7 @@ from app.ui.ocr_selector import OcrSelector
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.tray import TrayIcon
 
-MUTEX_NAME = "PopTrans.SingleInstance.Mutex"
+MUTEX_NAME = "PickTrans.SingleInstance.Mutex"
 
 
 def _another_instance_running() -> bool:
@@ -231,7 +231,7 @@ def main() -> int:
     app.setWindowIcon(app_icon())
 
     if _another_instance_running():
-        QMessageBox.information(None, APP_DISPLAY, "PopTrans 已经在运行（请查看系统托盘）。")
+        QMessageBox.information(None, APP_DISPLAY, "PickTrans 已经在运行（请查看系统托盘）。")
         return 0
 
     config = Config()
@@ -288,7 +288,7 @@ def main() -> int:
                 )
             elif manual:
                 update_bridge.no_update.emit()
-        threading.Thread(target=work, daemon=True, name="poptrans-update").start()
+        threading.Thread(target=work, daemon=True, name="picktrans-update").start()
 
     update_bridge.found.connect(_show_update)
     update_bridge.no_update.connect(
@@ -320,7 +320,7 @@ def main() -> int:
         warmup()
         formula_warmup()
 
-    threading.Thread(target=_warmup, daemon=True, name="poptrans-warmup").start()
+    threading.Thread(target=_warmup, daemon=True, name="picktrans-warmup").start()
     _check_update()
 
     if not config.get("api_key"):

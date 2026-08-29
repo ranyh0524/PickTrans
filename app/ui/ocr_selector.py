@@ -5,7 +5,7 @@ from PyQt6.QtCore import Qt, QRect, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QGuiApplication
 from PyQt6.QtWidgets import QLabel, QRubberBand, QWidget
 
-DEBUG = os.environ.get("POPTRANS_DEBUG") == "1"
+DEBUG = os.environ.get("PICKTRANS_DEBUG") == "1"
 
 MIN_REGION = 8  # 小于该尺寸视为误操作，直接取消
 

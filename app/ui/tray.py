@@ -10,7 +10,7 @@ class TrayIcon(QSystemTrayIcon):
         super().__init__(icon, parent)
         self.config = config
         self.open_settings = open_settings
-        self.setToolTip(f"PopTrans 划词翻译 v{APP_VERSION}")
+        self.setToolTip(f"PickTrans 划词翻译 v{APP_VERSION}")
 
         menu = QMenu()
         self.toggle_action = menu.addAction("划词翻译：已开启")

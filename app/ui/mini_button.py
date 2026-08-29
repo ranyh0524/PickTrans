@@ -14,7 +14,7 @@ from PyQt6.QtCore import Qt, QTimer, QPoint, pyqtSignal
 from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtWidgets import QLabel, QWidget
 
-DEBUG = os.environ.get("POPTRANS_DEBUG") == "1"
+DEBUG = os.environ.get("PICKTRANS_DEBUG") == "1"
 
 STYLE = """
 QLabel#face {

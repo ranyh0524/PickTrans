@@ -24,7 +24,7 @@ from ..detector import detect, target_for, LANG_NAMES
 from ..formula import build_rich_html
 from ..translator import TranslateWorker
 
-DEBUG = os.environ.get("POPTRANS_DEBUG") == "1"
+DEBUG = os.environ.get("PICKTRANS_DEBUG") == "1"
 
 
 def _dlog(msg: str):

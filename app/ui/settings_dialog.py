@@ -105,7 +105,7 @@ class SettingsDialog(QDialog):
     def __init__(self, config, parent=None):
         super().__init__(parent)
         self.config = config
-        self.setWindowTitle(f"PopTrans 设置 v{APP_VERSION}")
+        self.setWindowTitle(f"PickTrans 设置 v{APP_VERSION}")
         self.setStyleSheet(STYLE)
         self.setMinimumWidth(560)
         self._testDone.connect(self._on_test_done)
@@ -275,7 +275,7 @@ class SettingsDialog(QDialog):
 
         # ================= 其他 =================
         misc_section = Section("其他")
-        self.autostart_check = QCheckBox("开机自动启动 PopTrans")
+        self.autostart_check = QCheckBox("开机自动启动 PickTrans")
         self.autostart_check.setChecked(autostart.is_enabled())
         misc_section.body.addWidget(self.autostart_check)
 

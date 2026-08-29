@@ -4,7 +4,7 @@ import sys
 import winreg
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-VALUE_NAME = "PopTrans"
+VALUE_NAME = "PickTrans"
 
 
 def _command() -> str:

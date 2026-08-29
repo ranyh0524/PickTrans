@@ -12,7 +12,7 @@ import sys
 import threading
 import time
 
-DEBUG = os.environ.get("POPTRANS_DEBUG") == "1"
+DEBUG = os.environ.get("PICKTRANS_DEBUG") == "1"
 
 
 def debug_log(msg: str):

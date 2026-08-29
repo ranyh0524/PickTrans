@@ -10,7 +10,7 @@ import threading
 
 from PyQt6.QtCore import QBuffer, QIODevice
 
-DEBUG = os.environ.get("POPTRANS_DEBUG") == "1"
+DEBUG = os.environ.get("PICKTRANS_DEBUG") == "1"
 
 
 def _dlog(msg: str):

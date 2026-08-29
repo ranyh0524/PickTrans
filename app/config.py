@@ -1,9 +1,9 @@
-"""配置管理：JSON 持久化到 %APPDATA%/PopTrans/config.json。"""
+"""配置管理：JSON 持久化到 %APPDATA%/PickTrans/config.json。"""
 import json
 import os
 
-APP_NAME = "PopTrans"
-APP_DISPLAY = "PopTrans 划词翻译"
+APP_NAME = "PickTrans"
+APP_DISPLAY = "PickTrans 划词翻译"
 APP_VERSION = "1.0.0"
 
 # 各家 OpenAI 兼容接口示例（README 里有完整说明）

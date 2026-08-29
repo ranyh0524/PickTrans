@@ -1,6 +1,6 @@
 """启动时后台检查更新：对比 update_url 指向的 JSON 清单与本地版本。
 
-清单格式：{"version": "1.2.0", "url": "https://.../PopTrans.exe", "notes": "..."}
+清单格式：{"version": "1.2.0", "url": "https://.../PickTrans.exe", "notes": "..."}
 托管位置不限（GitHub raw / 对象存储 / 任意静态服务）。失败一律静默。
 """
 import json

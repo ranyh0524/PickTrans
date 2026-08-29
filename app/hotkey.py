@@ -69,7 +69,7 @@ class HotkeyManager:
                 return
             self._stop_flag = False
             self._thread = threading.Thread(
-                target=self._run, args=parsed, daemon=True, name="poptrans-hotkey"
+                target=self._run, args=parsed, daemon=True, name="picktrans-hotkey"
             )
             self._thread.start()
 

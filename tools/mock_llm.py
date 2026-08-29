@@ -1,6 +1,6 @@
 """本地 mock 大模型服务器：模拟 OpenAI 兼容的 /v1/chat/completions 接口。
 
-用途：不依赖真实 API key，端到端测试 PopTrans 的完整链路。
+用途：不依赖真实 API key，端到端测试 PickTrans 的完整链路。
 用法：python tools/mock_llm.py  （监听 127.0.0.1:8765）
 配置：api_base = http://127.0.0.1:8765/v1, api_key = test, model = mock-model
 """
