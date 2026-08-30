@@ -102,9 +102,10 @@ class SettingsDialog(QDialog):
     _testDone = pyqtSignal(str)
     _modelsDone = pyqtSignal(str, list)   # (请求时的 api_base, 模型名列表)
 
-    def __init__(self, config, parent=None):
+    def __init__(self, config, cache=None, parent=None):
         super().__init__(parent)
         self.config = config
+        self.cache = cache
         self.setWindowTitle(f"PickTrans 设置 v{APP_VERSION}")
         self.setStyleSheet(STYLE)
         self.setMinimumWidth(560)
@@ -285,6 +286,17 @@ class SettingsDialog(QDialog):
         self.update_edit.setPlaceholderText("version.json 清单 URL（含 version/url/notes），留空不检查更新")
         update_row.addWidget(self.update_edit, 1)
         misc_section.body.addLayout(update_row)
+
+        if self.cache is not None:
+            cache_row = QHBoxLayout()
+            self.cache_label = QLabel(f"已缓存 {len(self.cache)} 条译文（重复句子直接取用，不调 API）")
+            clear_btn = QPushButton("清空缓存")
+            clear_btn.setObjectName("ghostBtn")
+            clear_btn.clicked.connect(self._clear_cache)
+            cache_row.addWidget(self.cache_label)
+            cache_row.addWidget(clear_btn)
+            cache_row.addStretch(1)
+            misc_section.body.addLayout(cache_row)
         root.addWidget(misc_section)
 
         # ================= 底部按钮 =================
@@ -370,6 +382,12 @@ class SettingsDialog(QDialog):
     def _on_test_done(self, message: str):
         self.test_btn.setEnabled(True)
         self.test_result.setText(message)
+
+    # ---------- 缓存 ----------
+
+    def _clear_cache(self):
+        n = self.cache.clear()
+        self.cache_label.setText(f"已清空 {n} 条缓存")
 
     # ---------- 保存 ----------
 

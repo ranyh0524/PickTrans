@@ -43,7 +43,8 @@ from PyQt6.QtCore import QObject, QTimer, QPoint, QUrl, pyqtSignal
 from PyQt6.QtGui import QCursor, QGuiApplication, QDesktopServices
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
-from app.config import Config, APP_NAME, APP_DISPLAY, APP_VERSION
+from app.config import Config, APP_NAME, APP_DISPLAY, APP_VERSION, config_dir
+from app.cache import TranslationCache
 from app.hotkey import HotkeyManager
 from app.listener import CaptureBus, SelectionListener
 from app.ocr import image_to_png_bytes, recognize_png, warmup
@@ -123,15 +124,19 @@ class AppController(QObject):
 
     MAX_CARDS = 6
 
-    def __init__(self, config, mini: MiniButton):
+    def __init__(self, config, mini: MiniButton, cache: TranslationCache | None = None,
+                 listener=None):
         super().__init__()
         self.config = config
         self.mini = mini
+        self.cache = cache
+        self.listener = listener
         self.cards: list[TranslationCard] = []
         self._ocr_card: TranslationCard | None = None
         self.selector = OcrSelector()
         self.ocr_bridge = OcrBridge()
         self.selector.regionSelected.connect(self.on_ocr_region)
+        self.selector.cancelled.connect(self.on_ocr_cancelled)
         self.ocr_bridge.finishedOk.connect(self.on_ocr_ok)
         self.ocr_bridge.finishedErr.connect(self.on_ocr_err)
 
@@ -140,7 +145,7 @@ class AppController(QObject):
             if not card.isVisible():
                 return card
         if len(self.cards) < self.MAX_CARDS:
-            card = TranslationCard(self.config)
+            card = TranslationCard(self.config, self.cache)
             self.cards.append(card)
             return card
         return self.cards[0]
@@ -182,12 +187,24 @@ class AppController(QObject):
             _dlog("ocr requested")
             self.mini.dismiss()
             self._ocr_card = self._acquire_card()
+            if self.listener is not None:
+                self.listener.set_suppressed(True)
             self.selector.start()
         except Exception:
             import traceback
             traceback.print_exc()
+            if self.listener is not None:
+                self.listener.set_suppressed(False)
+
+    def on_ocr_cancelled(self):
+        _dlog("ocr cancelled")
+        if self.listener is not None:
+            self.listener.set_suppressed(False)
 
     def on_ocr_region(self, x: int, y: int, w: int, h: int):
+        # 蒙层已隐藏，恢复划词捕获；识别本身不再干扰用户操作
+        if self.listener is not None:
+            self.listener.set_suppressed(False)
         try:
             _dlog(f"ocr region ({x},{y}) {w}x{h}")
             # 必须用主屏对象抓图：Windows 下它走虚拟桌面 DC，全局坐标对副屏同样有效；
@@ -235,6 +252,7 @@ def main() -> int:
         return 0
 
     config = Config()
+    cache = TranslationCache(os.path.join(config_dir(), "cache.json"))
 
     # ---- 组件 ----
     bus = CaptureBus()
@@ -245,7 +263,7 @@ def main() -> int:
         _ConfigView(config, enabled_key="ocr_enabled", hotkey_key="ocr_hotkey"),
         lambda: bus.ocrRequested.emit(),
     )
-    controller = AppController(config, mini)
+    controller = AppController(config, mini, cache, listener)
     dialog_holder = {}
 
     def on_settings_changed():
@@ -301,7 +319,7 @@ def main() -> int:
     tray = TrayIcon(
         config,
         app_icon(),
-        lambda: _open_settings(config, dialog_holder, app_icon(), on_settings_changed),
+        lambda: _open_settings(config, cache, dialog_holder, app_icon(), on_settings_changed),
         on_ocr=controller.on_ocr_requested,
         on_update=lambda: _check_update(manual=True),
     )
@@ -326,24 +344,25 @@ def main() -> int:
     if not config.get("api_key"):
         QTimer.singleShot(
             400,
-            lambda: _open_settings(config, dialog_holder, app_icon(), on_settings_changed),
+            lambda: _open_settings(config, cache, dialog_holder, app_icon(), on_settings_changed),
         )
 
     exit_code = app.exec()
 
+    cache.save()
     listener.stop()
     hotkey.stop()
     ocr_hotkey.stop()
     return exit_code
 
 
-def _open_settings(config, dialog_holder, icon, on_changed):
+def _open_settings(config, cache, dialog_holder, icon, on_changed):
     dialog = dialog_holder.get("dlg")
     if dialog is not None and dialog.isVisible():
         dialog.raise_()
         dialog.activateWindow()
         return
-    dialog = SettingsDialog(config)
+    dialog = SettingsDialog(config, cache)
     dialog.setWindowIcon(icon)
     dialog.settingsChanged.connect(on_changed)
     dialog_holder["dlg"] = dialog

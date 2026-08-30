@@ -80,6 +80,7 @@ class SelectionListener:
         self._last_click_time = 0.0
         self._last_click_pos = (0, 0)
         self._debounce_until = 0.0
+        self._suppressed = False
 
     # ---------- 生命周期 ----------
 
@@ -92,6 +93,11 @@ class SelectionListener:
     def stop(self):
         if self._listener:
             self._listener.stop()
+
+    def set_suppressed(self, flag: bool):
+        """暂停/恢复取词：OCR 框选期间拖拽不是划词，不能触发 Ctrl+C 捕获。"""
+        with self._lock:
+            self._suppressed = flag
 
     # ---------- 钩子回调（钩子线程，必须快速返回） ----------
 
@@ -120,7 +126,10 @@ class SelectionListener:
             # 释放
             press = self._press_pos
             self._press_pos = None
-            should_capture = (press is not None) and (self._dragged or self._is_double)
+            should_capture = (
+                (press is not None) and (self._dragged or self._is_double)
+                and not self._suppressed
+            )
         debug_log(f"click release ({x},{y}) capture={should_capture}")
         if should_capture:
             threading.Thread(target=self._capture, args=(x, y, False), daemon=True).start()
@@ -129,6 +138,10 @@ class SelectionListener:
 
     def capture_current_selection(self):
         """供热键调用：直接取词并直翻。"""
+        with self._lock:
+            if self._suppressed:
+                debug_log("suppressed, hotkey capture skipped")
+                return
         threading.Thread(target=self._capture, args=(*self._mouse.position, True), daemon=True).start()
 
     def _capture(self, x, y, direct):
@@ -140,6 +153,10 @@ class SelectionListener:
         if now < self._debounce_until:
             debug_log("debounced, skip")
             return
+        with self._lock:
+            if self._suppressed:
+                debug_log("suppressed, skip")
+                return
         self._debounce_until = now + DEBOUNCE_S
 
         if not direct:

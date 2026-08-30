@@ -1,4 +1,4 @@
-"""翻译卡片：显示原文、流式渲染大模型译文，支持复制/重试/关闭/拖动。
+"""翻译卡片：显示原文、流式渲染大模型译文，支持复制/重试/最小化/关闭/拖动。
 
 圆角通过 WA_TranslucentBackground + 样式表实现（顶层窗口不能用
 QGraphicsDropShadowEffect，会原生崩溃）。
@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ..config import DEFAULTS
 from ..detector import detect, target_for, LANG_NAMES
 from ..formula import build_rich_html
 from ..translator import TranslateWorker
@@ -132,11 +133,11 @@ def build_style(theme: str, font_size: int) -> str:
     padding: 3px 12px;
 }}
 #statusLabel {{ color: {t['status']}; font-size: 12px; }}
-#closeBtn {{
+#closeBtn, #minBtn {{
     border: none; background: transparent; color: {t['close_fg']};
     font-size: 13px; border-radius: 7px; padding: 1px 7px;
 }}
-#closeBtn:hover {{ background: {t['close_hover_bg']}; color: {t['close_hover_fg']}; }}
+#closeBtn:hover, #minBtn:hover {{ background: {t['close_hover_bg']}; color: {t['close_hover_fg']}; }}
 #sourceBox {{
     background: {t['source_bg']}; border: none; border-radius: 10px;
     color: {t['source_fg']}; font-size: 12.5px; padding: 6px;
@@ -169,7 +170,7 @@ class _ResizeGrip(QSizeGrip):
 class TranslationCard(QWidget):
     _richReady = pyqtSignal(str, str, dict)
 
-    def __init__(self, config):
+    def __init__(self, config, cache=None):
         super().__init__(
             None,
             Qt.WindowType.FramelessWindowHint
@@ -177,12 +178,16 @@ class TranslationCard(QWidget):
             | Qt.WindowType.WindowStaysOnTopHint,
         )
         self.config = config
+        self.cache = cache
         self.worker = None
         self.current_text = ""
         self.current_target = "zh"
         self._result_text = ""
+        self._cache_key: tuple | None = None
         self._drag_offset: QPoint | None = None
         self._auto_height = True
+        self._minimized = False
+        self._restore_h = 0
 
         self.setObjectName("cardShell")
         self.apply_style()
@@ -201,14 +206,17 @@ class TranslationCard(QWidget):
         root = QVBoxLayout(shell)
         root.setContentsMargins(1, 1, 1, 1)
         root.setSpacing(0)
+        self._root_layout = root
 
         # ---- 顶部渐变饰条 ----
         accent = QFramelessAccent()
+        self._accent = accent
         root.addWidget(accent)
 
         content = QVBoxLayout()
         content.setContentsMargins(14, 10, 14, 12)
         content.setSpacing(8)
+        self._content_layout = content
         root.addLayout(content)
 
         # ---- 头部（可拖动区域） ----
@@ -218,6 +226,12 @@ class TranslationCard(QWidget):
         self.lang_label.setObjectName("langBadge")
         self.status_label = QLabel("")
         self.status_label.setObjectName("statusLabel")
+        self.min_btn = QPushButton("—")
+        self.min_btn.setObjectName("minBtn")
+        self.min_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.min_btn.setToolTip("最小化 / 还原")
+        self.min_btn.setFixedSize(24, 22)
+        self.min_btn.clicked.connect(self._toggle_minimize)
         close_btn = QPushButton("✕")
         close_btn.setObjectName("closeBtn")
         close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -226,6 +240,7 @@ class TranslationCard(QWidget):
         header.addWidget(self.lang_label)
         header.addStretch(1)
         header.addWidget(self.status_label)
+        header.addWidget(self.min_btn)
         header.addWidget(close_btn)
         content.addLayout(header)
 
@@ -273,8 +288,8 @@ class TranslationCard(QWidget):
 
     # ---------- 对外接口 ----------
 
-    def translate(self, text: str, anchor: QPoint | None = None):
-        """开始一次新翻译；重复调用会取消上一次。"""
+    def translate(self, text: str, anchor: QPoint | None = None, force: bool = False):
+        """开始一次新翻译；重复调用会取消上一次。force 时绕过缓存重新请求。"""
         _dlog(f"translate begin len={len(text)}")
         self.current_text = text
         self._result_text = ""
@@ -289,6 +304,28 @@ class TranslationCard(QWidget):
 
         self._show_at(anchor or QCursor.pos() + QPoint(18, 26))
         self._stop_worker()
+
+        model = self.config.get("model") or DEFAULTS["model"]
+        temperature = self.config.get("temperature", DEFAULTS["temperature"])
+        self._cache_key = (text, source_lang, self.current_target, model, temperature)
+
+        cached = None
+        if not force and self.cache is not None:
+            cached = self.cache.get(*self._cache_key)
+        if cached is not None:
+            _dlog("cache hit, skip API call")
+            self._result_text = cached
+            self.target_box.setPlainText(cached)
+            self.copy_btn.setEnabled(True)
+            self.retry_btn.setEnabled(True)
+            self._set_status("完成 · 缓存", "done")
+            if "$" in cached:
+                threading.Thread(target=self._render_rich, args=(cached,), daemon=True).start()
+            self._reset_timer.start()
+            if self.config.get("auto_copy"):
+                self._copy_result(quiet=True)
+            return
+
         self._set_status("翻译中…", "running")
         self.worker = TranslateWorker(self.config, text, source_lang, self.current_target)
         self.worker.chunk.connect(self._on_chunk)
@@ -326,6 +363,48 @@ class TranslationCard(QWidget):
         self._grip.move(self.width() - self._grip.width(), self.height() - self._grip.height())
         super().resizeEvent(event)
 
+    # ---------- 最小化 / 还原 ----------
+
+    def _toggle_minimize(self):
+        self._set_minimized(not self._minimized)
+
+    def _set_minimized(self, flag: bool):
+        if flag == self._minimized:
+            return
+        self._minimized = flag
+        for w in (self.source_box, self.target_box, self.copy_btn, self.retry_btn, self._grip):
+            w.setVisible(not flag)
+        if flag:
+            self._restore_h = self.height()
+            self.min_btn.setText("□")
+            self.setMinimumHeight(40)
+            self.resize(self.width(), self._collapsed_height())
+        else:
+            self.min_btn.setText("—")
+            self.setMinimumHeight(200)
+            screen = QGuiApplication.screenAt(self.pos()) or QGuiApplication.primaryScreen()
+            max_h = screen.availableGeometry().height() - 40
+            self.resize(self.width(), min(self._restore_h or 320, max_h))
+            if self._auto_height:
+                # 布局要等事件循环稳定后才反映可见性，延迟重调高度
+                self._reset_timer.start()
+
+    def _collapsed_height(self) -> int:
+        """折叠后只剩饰条 + 头部，高度按各部件确定性求和，不依赖 sizeHint 缓存。"""
+        rm = self._root_layout.contentsMargins()
+        cm = self._content_layout.contentsMargins()
+        header_h = max(
+            self.lang_label.sizeHint().height(),
+            self.status_label.sizeHint().height(),
+            self.min_btn.height(),
+        )
+        return (
+            self._accent.height()
+            + rm.top() + rm.bottom()
+            + cm.top() + cm.bottom()
+            + header_h
+        )
+
     # ---------- 显示与布局 ----------
 
     def apply_style(self):
@@ -339,6 +418,7 @@ class TranslationCard(QWidget):
         self.setStyleSheet(build_style(theme, size))
 
     def _show_at(self, anchor: QPoint):
+        self._set_minimized(False)
         self._place_near(anchor)
         self.show()
         if self._auto_height:
@@ -359,7 +439,7 @@ class TranslationCard(QWidget):
 
     def _adjust_height(self):
         """根据文档实际高度调整卡片高度，超出屏幕则用最大值靠滚动；用户手动缩放后不再接管。"""
-        if not self._auto_height:
+        if not self._auto_height or self._minimized:
             return
         screen = QGuiApplication.screenAt(self.pos()) or QGuiApplication.primaryScreen()
         area = screen.availableGeometry()
@@ -381,6 +461,8 @@ class TranslationCard(QWidget):
     def _on_ok(self, full: str):
         _dlog("finished ok")
         self._result_text = full
+        if self.cache is not None and self._cache_key is not None:
+            self.cache.put(*self._cache_key, full)
         self._set_status("完成", "done")
         self.copy_btn.setEnabled(True)
         self.retry_btn.setEnabled(True)
@@ -439,7 +521,7 @@ class TranslationCard(QWidget):
 
     def _retry(self):
         if self.current_text:
-            self.translate(self.current_text)
+            self.translate(self.current_text, force=True)
 
     # ---------- 工作线程管理 ----------
 
@@ -473,6 +555,13 @@ class TranslationCard(QWidget):
     def mouseReleaseEvent(self, event):
         self._drag_offset = None
         super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if self._minimized:
+            self._set_minimized(False)
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
 
 class QFramelessAccent(QWidget):
