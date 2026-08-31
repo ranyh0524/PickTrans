@@ -167,7 +167,7 @@ class SelectionListener:
                 debug_log("blacklisted, skip")
                 return
 
-        original = self._paste()
+        original = self._paste() or ""
         self._copy_clear()
         debug_log(f"clipboard cleared (original len={len(original)})")
 
@@ -178,7 +178,7 @@ class SelectionListener:
             debug_log("ctrl+c sent")
         except Exception as e:
             debug_log(f"ctrl+c failed: {e!r}")
-            self._schedule_restore(original)
+            self._schedule_restore(original, "")
             return
 
         text = ""
@@ -190,7 +190,7 @@ class SelectionListener:
                 text = cur
                 break
         debug_log(f"poll done, text len={len(text)}")
-        self._schedule_restore(original)
+        self._schedule_restore(original, text)
 
         text = text.strip()
         max_len = int(cfg.get("max_selection_len", 5000))
@@ -201,13 +201,14 @@ class SelectionListener:
 
     # ---------- 剪贴板工具（pyperclip 每次独立开关剪贴板，线程内串行使用） ----------
 
-    def _paste(self) -> str:
+    def _paste(self) -> str | None:
+        """读取剪贴板；读不到（被其他程序占用等）返回 None，与「空」区分开。"""
         for _ in range(2):
             try:
                 return pyperclip.paste() or ""
             except Exception:
                 time.sleep(0.05)
-        return ""
+        return None
 
     def _copy_clear(self):
         try:
@@ -215,8 +216,15 @@ class SelectionListener:
         except Exception:
             pass
 
-    def _schedule_restore(self, original: str):
+    def _schedule_restore(self, original: str, captured: str):
         def restore():
+            cur = self._paste()
+            if cur is None:
+                return  # 读不到剪贴板状态，宁可不恢复也不能覆盖
+            # 剪贴板里已经不是取词写入的内容：说明用户之后自己复制了新内容，不覆盖
+            if cur.strip() and cur != captured:
+                debug_log("restore skipped: newer clipboard content")
+                return
             if original:
                 try:
                     pyperclip.copy(original)
