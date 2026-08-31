@@ -48,13 +48,22 @@ def _parse_combo(combo: str):
 class HotkeyManager:
     """可重启的全局热键：注册/注销都在专用消息线程里完成。"""
 
-    def __init__(self, config, action):
+    def __init__(self, config, action, on_status=None):
         self.config = config
         self.action = action  # 在热键线程回调
+        self.on_status = on_status  # (combo, ok)，热键线程里回调
         self._thread = None
         self._thread_id = 0
         self._stop_flag = False
         self._lock = threading.Lock()
+
+    def _notify(self, combo: str, ok: bool):
+        if self.on_status is None:
+            return
+        try:
+            self.on_status(combo, ok)
+        except Exception:
+            pass
 
     def start(self):
         self.restart()
@@ -64,12 +73,14 @@ class HotkeyManager:
             self._stop_locked()
             if not self.config.get("hotkey_enabled"):
                 return
-            parsed = _parse_combo(self.config.get("hotkey", "ctrl+alt+y"))
+            combo = self.config.get("hotkey", "ctrl+alt+y")
+            parsed = _parse_combo(combo)
             if not parsed:
+                self._notify(combo, False)
                 return
             self._stop_flag = False
             self._thread = threading.Thread(
-                target=self._run, args=parsed, daemon=True, name="picktrans-hotkey"
+                target=self._run, args=(*parsed, combo), daemon=True, name="picktrans-hotkey"
             )
             self._thread.start()
 
@@ -87,11 +98,14 @@ class HotkeyManager:
         if thread and thread.is_alive():
             thread.join(timeout=1.0)
 
-    def _run(self, mods, vk):
+    def _run(self, mods, vk, combo):
         self._thread_id = kernel32.GetCurrentThreadId()
         hotkey_id = 1  # 本进程只注册一个热键，直接用整数 id
         if not user32.RegisterHotKey(None, hotkey_id, mods, vk):
-            return  # 组合键被占用，静默降级
+            # 组合键被其他程序占用（1409）等：上报，由 UI 提醒用户
+            self._notify(combo, False)
+            return
+        self._notify(combo, True)
         try:
             msg = ctypes.wintypes.MSG()
             while not self._stop_flag:

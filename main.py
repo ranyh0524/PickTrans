@@ -39,9 +39,9 @@ def _fix_windows_console():
 
 _fix_windows_console()
 
-from PyQt6.QtCore import QObject, QTimer, QPoint, QUrl, pyqtSignal
+from PyQt6.QtCore import QObject, QTimer, QPoint, QUrl, Qt, pyqtSignal
 from PyQt6.QtGui import QCursor, QGuiApplication, QDesktopServices
-from PyQt6.QtWidgets import QApplication, QMessageBox
+from PyQt6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 
 from app.config import Config, APP_NAME, APP_DISPLAY, APP_VERSION, config_dir
 from app.cache import TranslationCache
@@ -258,10 +258,20 @@ def main() -> int:
     bus = CaptureBus()
     listener = SelectionListener(config, bus)
     mini = MiniButton(int(config.get("button_timeout_ms", 4000)))
-    hotkey = HotkeyManager(_ConfigView(config), lambda: listener.capture_current_selection())
+    def _hotkey_report(which: str):
+        def _cb(combo: str, ok: bool):
+            bus.hotkeyStatus.emit(which, combo, ok)
+        return _cb
+
+    hotkey = HotkeyManager(
+        _ConfigView(config),
+        lambda: listener.capture_current_selection(),
+        on_status=_hotkey_report("划词翻译"),
+    )
     ocr_hotkey = HotkeyManager(
         _ConfigView(config, enabled_key="ocr_enabled", hotkey_key="ocr_hotkey"),
         lambda: bus.ocrRequested.emit(),
+        on_status=_hotkey_report("OCR 取词"),
     )
     controller = AppController(config, mini, cache, listener)
     dialog_holder = {}
@@ -273,15 +283,33 @@ def main() -> int:
         controller.restyle()
 
     update_bridge = UpdateBridge()
+    # 非模态弹窗：exec()/information() 会在 Windows 上禁用本进程所有其他窗口
+    # （EnableWindow），导致弹窗开着时划词与 OCR 框选全部失效
+    live_boxes: list = []
+
+    def _notify(icon: QMessageBox.Icon, text: str):
+        box = QMessageBox(icon, APP_DISPLAY, text)
+        box.setWindowModality(Qt.WindowModality.NonModal)
+        live_boxes.append(box)
+        box.finished.connect(lambda: live_boxes.remove(box))
+        box.show()
 
     def _show_update(version: str, url: str, notes: str):
         box = QMessageBox(QMessageBox.Icon.Information, APP_DISPLAY,
                           f"发现新版本 v{version}" + (f"\n\n{notes}" if notes else ""))
-        dl = box.addButton("打开下载页", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("打开下载页", QMessageBox.ButtonRole.AcceptRole)
         box.addButton("稍后", QMessageBox.ButtonRole.RejectRole)
-        box.exec()
-        if box.clickedButton() is dl and url:
-            QDesktopServices.openUrl(QUrl(url))
+        box.setWindowModality(Qt.WindowModality.NonModal)
+        box.buttonClicked.connect(
+            lambda btn: (
+                QDesktopServices.openUrl(QUrl(url))
+                if url and box.buttonRole(btn) == QMessageBox.ButtonRole.AcceptRole
+                else None
+            )
+        )
+        live_boxes.append(box)
+        box.finished.connect(lambda: live_boxes.remove(box))
+        box.show()
 
     def _check_update(manual: bool = False):
         def work():
@@ -310,10 +338,10 @@ def main() -> int:
 
     update_bridge.found.connect(_show_update)
     update_bridge.no_update.connect(
-        lambda: QMessageBox.information(None, APP_DISPLAY, f"当前 v{APP_VERSION} 已是最新版本。")
+        lambda: _notify(QMessageBox.Icon.Information, f"当前 v{APP_VERSION} 已是最新版本。")
     )
     update_bridge.failed.connect(
-        lambda msg: QMessageBox.warning(None, APP_DISPLAY, msg)
+        lambda msg: _notify(QMessageBox.Icon.Warning, msg)
     )
 
     tray = TrayIcon(
@@ -328,6 +356,18 @@ def main() -> int:
     bus.textCaptured.connect(controller.on_captured)
     bus.ocrRequested.connect(controller.on_ocr_requested)
     mini.clicked.connect(controller.on_mini_clicked)
+
+    def _on_hotkey_status(which: str, combo: str, ok: bool):
+        if not ok:
+            tray.showMessage(
+                "PickTrans 热键冲突",
+                f"「{which}」热键 {combo} 已被其他程序注册，按下不会生效。\n"
+                "请到设置中更换组合键（如 ctrl+alt+k）。",
+                QSystemTrayIcon.MessageIcon.Warning,
+                10000,
+            )
+
+    bus.hotkeyStatus.connect(_on_hotkey_status)
 
     # ---- 启动 ----
     listener.start()
@@ -366,8 +406,11 @@ def _open_settings(config, cache, dialog_holder, icon, on_changed):
     dialog.setWindowIcon(icon)
     dialog.settingsChanged.connect(on_changed)
     dialog_holder["dlg"] = dialog
-    dialog.exec()
-    dialog_holder["dlg"] = None
+    # 非模态显示：exec() 会禁用本进程其他窗口，导致设置开着时
+    # 划词与 OCR 框选失效
+    dialog.setWindowModality(Qt.WindowModality.NonModal)
+    dialog.finished.connect(lambda: dialog_holder.__setitem__("dlg", None))
+    dialog.show()
 
 
 if __name__ == "__main__":

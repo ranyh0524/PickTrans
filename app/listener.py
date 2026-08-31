@@ -64,6 +64,8 @@ class CaptureBus(QObject):
     textCaptured = pyqtSignal(int, int, str, bool)
     # OCR 热键触发（热键线程发出）
     ocrRequested = pyqtSignal()
+    # 热键注册结果：功能名, 组合键, 是否注册成功（热键线程发出）
+    hotkeyStatus = pyqtSignal(str, str, bool)
 
 
 class SelectionListener:
