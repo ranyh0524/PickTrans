@@ -12,13 +12,14 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from PyQt6.QtCore import QCoreApplication, QEvent, QPoint, QPointF, Qt
+from PyQt6.QtCore import QCoreApplication, QEvent, QPoint, QPointF, QRect, Qt
 from PyQt6.QtGui import QImage, QMouseEvent
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QScrollArea
 
 from app.ui.card import TranslationCard
 from app.ui.mini_button import MiniButton
 from app.ui.ocr_selector import OcrSelector
+from app.ui.settings_dialog import SettingsDialog
 
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build")
 os.makedirs(OUT, exist_ok=True)
@@ -111,7 +112,24 @@ def main():
     pix.save(path)
     check("ocr.selector.rendered", pix.width() > 1000 and not pix.isNull(),
           f"{pix.width()}x{pix.height()}")
+    check("ocr.selector.hint", selector._hint.isVisible() and bool(selector._hint.text()),
+          selector._hint.text())
+    selector._pending_rect = QRect(10, 10, 100, 40)
+    selector._capture_delay.start()
+    selector.start()
+    check("ocr.selector.cancels_pending", not selector._capture_delay.isActive()
+          and selector._pending_rect is None)
     selector.hide()
+
+    # ---------- 5. 设置窗口在小屏幕上可滚动 ----------
+    dialog = SettingsDialog(config)
+    dialog.show()
+    app.processEvents()
+    minimum = dialog.minimumSizeHint()
+    check("settings.scrollable", dialog.findChild(QScrollArea) is not None)
+    check("settings.compact", minimum.height() <= 720,
+          f"minimum={minimum.width()}x{minimum.height()}")
+    dialog.close()
 
     mini.dismiss()
     card.close_card()

@@ -46,6 +46,11 @@ class OcrSelector(QWidget):
         self.setGeometry(_virtual_geometry())
 
         self._origin = None
+        self._pending_rect = None
+        self._capture_delay = QTimer(self)
+        self._capture_delay.setSingleShot(True)
+        self._capture_delay.setInterval(160)
+        self._capture_delay.timeout.connect(self._emit_pending)
         self._timeout = QTimer(self)
         self._timeout.setSingleShot(True)
         self._timeout.setInterval(self.TIMEOUT_MS)
@@ -69,6 +74,8 @@ class OcrSelector(QWidget):
     # ---------- 生命周期 ----------
 
     def start(self):
+        self._capture_delay.stop()
+        self._pending_rect = None
         self._origin = None
         self._rubber.hide()
         self.setGeometry(_virtual_geometry())
@@ -124,12 +131,21 @@ class OcrSelector(QWidget):
             if rect.width() < MIN_REGION or rect.height() < MIN_REGION:
                 self._finish(None)
                 return
-            # 先隐藏蒙层，稍等一帧再截图，避免把蒙层拍进去
+            # 先隐藏蒙层，稍等一帧再截图；成员定时器可被下一轮框选取消。
             self.hide()
-            QTimer.singleShot(160, lambda: self._finish(rect))
+            self._pending_rect = QRect(rect)
+            self._capture_delay.start()
         super().mouseReleaseEvent(event)
 
+    def _emit_pending(self):
+        rect = self._pending_rect
+        self._pending_rect = None
+        if rect is not None:
+            self._finish(rect)
+
     def _finish(self, rect):
+        self._capture_delay.stop()
+        self._pending_rect = None
         self._timeout.stop()
         self.hide()
         if rect is None:

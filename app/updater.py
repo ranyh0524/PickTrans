@@ -6,6 +6,7 @@
 import json
 import re
 import urllib.request
+from urllib.parse import urlparse
 
 from .config import APP_VERSION
 
@@ -17,8 +18,19 @@ def parse_version(s: str) -> tuple:
     return tuple(nums + [0] * (3 - len(nums)))
 
 
+def _validated_web_url(url: str, label: str) -> str:
+    parsed = urlparse(url)
+    local_http = parsed.scheme == "http" and parsed.hostname in {
+        "localhost", "127.0.0.1", "::1",
+    }
+    if not parsed.netloc or (parsed.scheme != "https" and not local_http):
+        raise ValueError(f"{label}必须使用 HTTPS（本机地址可使用 HTTP）")
+    return url
+
+
 def check_update(url: str, timeout: int = 10) -> dict | None:
     """有新版本返回清单 dict，否则返回 None；网络/格式错误抛异常由调用方处理。"""
+    url = _validated_web_url(url, "更新地址")
     with urllib.request.urlopen(url, timeout=timeout) as r:
         raw = r.read(MAX_MANIFEST_BYTES + 1)
     if len(raw) > MAX_MANIFEST_BYTES or raw.lstrip()[:1] in (b"<", b""):
@@ -27,7 +39,13 @@ def check_update(url: str, timeout: int = 10) -> dict | None:
         manifest = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
         raise ValueError(f"更新清单不是有效 JSON：{e}") from e
+    if not isinstance(manifest, dict):
+        raise ValueError("更新清单顶层必须是 JSON 对象")
     latest = str(manifest.get("version", "")).strip()
     if not latest or parse_version(latest) <= parse_version(APP_VERSION):
         return None
+    download_url = str(manifest.get("url") or "").strip()
+    if not download_url:
+        raise ValueError("更新清单缺少下载地址")
+    manifest["url"] = _validated_web_url(download_url, "下载地址")
     return manifest

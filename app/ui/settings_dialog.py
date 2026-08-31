@@ -14,8 +14,10 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QRadioButton,
+    QScrollArea,
     QSpinBox,
     QVBoxLayout,
+    QWidget,
 )
 
 from .. import autostart
@@ -34,7 +36,8 @@ MODEL_SUGGESTIONS = [
 ]
 
 STYLE = """
-QDialog { background: #F3F5FA; }
+QDialog, QScrollArea, #scrollContent { background: #F3F5FA; }
+QScrollArea { border: none; }
 #section {
     background: #FFFFFF;
     border: 1px solid #E9ECF4;
@@ -108,13 +111,23 @@ class SettingsDialog(QDialog):
         self.cache = cache
         self.setWindowTitle(f"PickTrans 设置 v{APP_VERSION}")
         self.setStyleSheet(STYLE)
-        self.setMinimumWidth(560)
+        self.setMinimumSize(560, 480)
+        self.resize(680, 720)
         self._testDone.connect(self._on_test_done)
         self._modelsDone.connect(self._on_models_done)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 16, 18, 14)
         root.setSpacing(12)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_content = QWidget()
+        scroll_content.setObjectName("scrollContent")
+        content = QVBoxLayout(scroll_content)
+        content.setContentsMargins(0, 0, 6, 0)
+        content.setSpacing(12)
 
         # ================= 大模型 API =================
         api_section = Section("大模型 API")
@@ -179,7 +192,7 @@ class SettingsDialog(QDialog):
         test_row.addWidget(self.test_result, 1)
         form.addRow("", test_row)
         api_section.body.addLayout(form)
-        root.addWidget(api_section)
+        content.addWidget(api_section)
 
         # ================= 翻译方向 =================
         dir_section = Section("翻译方向")
@@ -193,9 +206,8 @@ class SettingsDialog(QDialog):
         self.target_combo = QComboBox()
         for code, name in LANG_NAMES.items():
             self.target_combo.addItem(name, code)
-        self.target_combo.setCurrentIndex(
-            max(0, list(LANG_NAMES).index(self.config.get("fixed_target", "zh")))
-        )
+        target_index = self.target_combo.findData(self.config.get("fixed_target", "zh"))
+        self.target_combo.setCurrentIndex(max(0, target_index))
         self.fixed_radio.toggled.connect(self.target_combo.setEnabled)
         self.target_combo.setEnabled(self.fixed_radio.isChecked())
         dir_row.addWidget(self.auto_radio)
@@ -203,7 +215,7 @@ class SettingsDialog(QDialog):
         dir_row.addWidget(self.target_combo)
         dir_row.addStretch(1)
         dir_section.body.addLayout(dir_row)
-        root.addWidget(dir_section)
+        content.addWidget(dir_section)
 
         # ================= 划词与热键 =================
         sel_section = Section("划词与热键")
@@ -231,7 +243,7 @@ class SettingsDialog(QDialog):
         self.blacklist_edit = QPlainTextEdit("\n".join(self.config.get("blacklist") or []))
         self.blacklist_edit.setFixedHeight(64)
         sel_section.body.addWidget(self.blacklist_edit)
-        root.addWidget(sel_section)
+        content.addWidget(sel_section)
 
         # ================= OCR 取词 =================
         ocr_section = Section("OCR 取词（识别屏幕上不可复制的文字）")
@@ -247,7 +259,7 @@ class SettingsDialog(QDialog):
         ocr_row.addWidget(QLabel("按下后框选屏幕区域，识别其中文字并翻译"))
         ocr_row.addStretch(1)
         ocr_section.body.addLayout(ocr_row)
-        root.addWidget(ocr_section)
+        content.addWidget(ocr_section)
 
         # ================= 翻译卡片 =================
         card_section = Section("翻译卡片")
@@ -272,7 +284,7 @@ class SettingsDialog(QDialog):
         card_row.addWidget(QLabel("保存后对新旧卡片同时生效"))
         card_row.addStretch(1)
         card_section.body.addLayout(card_row)
-        root.addWidget(card_section)
+        content.addWidget(card_section)
 
         # ================= 其他 =================
         misc_section = Section("其他")
@@ -283,7 +295,7 @@ class SettingsDialog(QDialog):
         update_row = QHBoxLayout()
         update_row.addWidget(QLabel("更新地址"))
         self.update_edit = QLineEdit(self.config.get("update_url"))
-        self.update_edit.setPlaceholderText("version.json 清单 URL（含 version/url/notes），留空不检查更新")
+        self.update_edit.setPlaceholderText("HTTPS version.json 直链（本机可用 HTTP），留空不检查更新")
         update_row.addWidget(self.update_edit, 1)
         misc_section.body.addLayout(update_row)
 
@@ -297,7 +309,10 @@ class SettingsDialog(QDialog):
             cache_row.addWidget(clear_btn)
             cache_row.addStretch(1)
             misc_section.body.addLayout(cache_row)
-        root.addWidget(misc_section)
+        content.addWidget(misc_section)
+        content.addStretch(1)
+        scroll.setWidget(scroll_content)
+        root.addWidget(scroll, 1)
 
         # ================= 底部按钮 =================
         buttons = QHBoxLayout()
@@ -344,13 +359,13 @@ class SettingsDialog(QDialog):
         ).start()
 
     @staticmethod
-    def _safe_fetch(base: str, key: str) -> list:
+    def _safe_fetch(base: str, key: str) -> list[str]:
         try:
             return fetch_models(base, key)
         except Exception:
             return []
 
-    def _on_models_done(self, base: str, models: list):
+    def _on_models_done(self, base: str, models: list[str]):
         self.fetch_models_btn.setEnabled(True)
         if base != self.base_edit.text().strip():
             return  # 地址已变更，丢弃过期结果
@@ -386,38 +401,48 @@ class SettingsDialog(QDialog):
     # ---------- 缓存 ----------
 
     def _clear_cache(self):
+        if self.cache is None:
+            return
         n = self.cache.clear()
         self.cache_label.setText(f"已清空 {n} 条缓存")
 
     # ---------- 保存 ----------
 
     def _save(self):
-        cfg = self.config
-        cfg.set("api_base", self.base_edit.text().strip())
-        cfg.set("api_key", self.key_edit.text().strip())
-        cfg.set("model", self.model_combo.currentText().strip())
-        cfg.set("direction_mode", "fixed" if self.fixed_radio.isChecked() else "auto")
-        cfg.set("fixed_target", self.target_combo.currentData() or "zh")
-        cfg.set("selection_enabled", self.selection_check.isChecked())
-        cfg.set("hotkey_enabled", self.hotkey_check.isChecked())
-        cfg.set("hotkey", self.hotkey_edit.text().strip() or "ctrl+alt+y")
-        cfg.set("auto_copy", self.auto_copy_check.isChecked())
-        cfg.set("ocr_enabled", self.ocr_check.isChecked())
-        cfg.set("ocr_hotkey", self.ocr_hotkey_edit.text().strip() or "ctrl+alt+o")
-        cfg.set("card_theme", self.theme_combo.currentData() or "light")
-        cfg.set("card_font_size", self.font_spin.value())
-        blacklist = [line.strip() for line in self.blacklist_edit.toPlainText().splitlines() if line.strip()]
-        cfg.set("blacklist", blacklist)
-        cfg.set("update_url", self.update_edit.text().strip())
+        blacklist = [
+            line.strip() for line in self.blacklist_edit.toPlainText().splitlines()
+            if line.strip()
+        ]
+        updates = {
+            "api_base": self.base_edit.text().strip(),
+            "api_key": self.key_edit.text().strip(),
+            "model": self.model_combo.currentText().strip(),
+            "direction_mode": "fixed" if self.fixed_radio.isChecked() else "auto",
+            "fixed_target": self.target_combo.currentData() or "zh",
+            "selection_enabled": self.selection_check.isChecked(),
+            "hotkey_enabled": self.hotkey_check.isChecked(),
+            "hotkey": self.hotkey_edit.text().strip() or "ctrl+alt+y",
+            "auto_copy": self.auto_copy_check.isChecked(),
+            "ocr_enabled": self.ocr_check.isChecked(),
+            "ocr_hotkey": self.ocr_hotkey_edit.text().strip() or "ctrl+alt+o",
+            "card_theme": self.theme_combo.currentData() or "light",
+            "card_font_size": self.font_spin.value(),
+            "blacklist": blacklist,
+            "update_url": self.update_edit.text().strip(),
+        }
+        try:
+            self.config.update(updates, persist=True)
+        except OSError as e:
+            self.save_result.setText(f"保存失败：{e}")
+            return
 
-        # 开机自启（注册表），失败不阻塞保存
+        # 开机自启使用注册表，失败不影响已保存的其他设置。
         autostart_error = ""
         try:
             autostart.set_enabled(self.autostart_check.isChecked())
         except OSError as e:
             autostart_error = f"（开机自启设置失败：{e}）"
 
-        cfg.save()
         self.settingsChanged.emit()
         self.save_result.setText("已保存 " + autostart_error)
         QTimer.singleShot(600, self.accept)

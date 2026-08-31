@@ -33,6 +33,132 @@ COPY_POLL_S = 0.4             # 等待 Ctrl+C 生效的最长时间
 POLL_INTERVAL_S = 0.03
 RESTORE_DELAY_S = 0.6         # 取到文本后多久恢复原剪贴板
 
+_GMEM_MOVEABLE = 0x0002
+_HWND_MESSAGE = ctypes.c_void_p(-3)
+_STANDARD_HGLOBAL_FORMATS = (8, 17, 15, 13)  # CF_DIB, CF_DIBV5, CF_HDROP, CF_UNICODETEXT
+_user32 = ctypes.windll.user32
+_kernel32 = ctypes.windll.kernel32
+_user32.CreateWindowExW.argtypes = [
+    ctypes.wintypes.DWORD, ctypes.wintypes.LPCWSTR, ctypes.wintypes.LPCWSTR,
+    ctypes.wintypes.DWORD, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+    ctypes.wintypes.HWND, ctypes.wintypes.HMENU, ctypes.wintypes.HINSTANCE,
+    ctypes.c_void_p,
+]
+_user32.CreateWindowExW.restype = ctypes.c_void_p
+_user32.DestroyWindow.argtypes = [ctypes.c_void_p]
+_user32.OpenClipboard.argtypes = [ctypes.c_void_p]
+_user32.GetClipboardSequenceNumber.restype = ctypes.wintypes.DWORD
+_user32.EnumClipboardFormats.argtypes = [ctypes.wintypes.UINT]
+_user32.EnumClipboardFormats.restype = ctypes.wintypes.UINT
+_user32.GetClipboardData.argtypes = [ctypes.wintypes.UINT]
+_user32.GetClipboardData.restype = ctypes.c_void_p
+_user32.SetClipboardData.argtypes = [ctypes.wintypes.UINT, ctypes.c_void_p]
+_user32.SetClipboardData.restype = ctypes.c_void_p
+_kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+_kernel32.GlobalLock.restype = ctypes.c_void_p
+_kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+_kernel32.GlobalSize.argtypes = [ctypes.c_void_p]
+_kernel32.GlobalSize.restype = ctypes.c_size_t
+_kernel32.GlobalAlloc.argtypes = [ctypes.wintypes.UINT, ctypes.c_size_t]
+_kernel32.GlobalAlloc.restype = ctypes.c_void_p
+_kernel32.GlobalFree.argtypes = [ctypes.c_void_p]
+_kernel32.GlobalFree.restype = ctypes.c_void_p
+
+
+def _create_clipboard_owner() -> int:
+    """创建不显示的 message-only 窗口，供 EmptyClipboard/SetClipboardData 持有所有权。"""
+    return int(_user32.CreateWindowExW(
+        0, "STATIC", "PickTransClipboardOwner", 0,
+        0, 0, 0, 0, _HWND_MESSAGE, None, None, None,
+    ) or 0)
+
+
+def _open_clipboard(owner: int) -> bool:
+    if not owner:
+        return False
+    for _ in range(5):
+        if _user32.OpenClipboard(ctypes.c_void_p(owner)):
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def _clipboard_sequence() -> int:
+    return int(_user32.GetClipboardSequenceNumber())
+
+
+def _snapshot_and_clear_clipboard(owner: int) -> list[tuple[int, bytes]] | None:
+    """深拷贝可用 HGLOBAL 格式并清空剪贴板；无法安全备份时返回 None。"""
+    if not _open_clipboard(owner):
+        return None
+    snapshot: list[tuple[int, bytes]] = []
+    try:
+        formats = []
+        fmt = 0
+        while True:
+            fmt = int(_user32.EnumClipboardFormats(fmt))
+            if not fmt:
+                break
+            formats.append(fmt)
+        # Windows 可从 CF_BITMAP 等格式按需合成 DIB；显式请求以保住图片内容。
+        for fmt in _STANDARD_HGLOBAL_FORMATS:
+            if fmt not in formats and _user32.IsClipboardFormatAvailable(fmt):
+                formats.append(fmt)
+        # 仅有 GDI/metafile 句柄且系统无法合成 DIB 时不能安全克隆，放弃取词。
+        if any(fmt in formats for fmt in (2, 3, 14)) and not any(
+            fmt in formats for fmt in (8, 17)
+        ):
+            return None
+        for fmt in formats:
+            handle = _user32.GetClipboardData(fmt)
+            if not handle:
+                continue
+            size = int(_kernel32.GlobalSize(handle))
+            if size <= 0:
+                continue  # 位图句柄等非 HGLOBAL 格式由其合成的 DIB 负责保存
+            ptr = _kernel32.GlobalLock(handle)
+            if not ptr:
+                continue
+            try:
+                snapshot.append((fmt, ctypes.string_at(ptr, size)))
+            finally:
+                _kernel32.GlobalUnlock(handle)
+        if not _user32.EmptyClipboard():
+            return None
+        return snapshot
+    finally:
+        _user32.CloseClipboard()
+
+
+def _restore_clipboard(owner: int, snapshot: list[tuple[int, bytes]],
+                       expected_sequence: int) -> bool:
+    """仅当剪贴板未再次变化时恢复快照；空快照会恢复为空剪贴板。"""
+    if _clipboard_sequence() != expected_sequence or not _open_clipboard(owner):
+        return False
+    try:
+        if _clipboard_sequence() != expected_sequence or not _user32.EmptyClipboard():
+            return False
+        restored = 0
+        for fmt, data in snapshot:
+            handle = _kernel32.GlobalAlloc(_GMEM_MOVEABLE, len(data))
+            if not handle:
+                continue
+            ptr = _kernel32.GlobalLock(handle)
+            if not ptr:
+                _kernel32.GlobalFree(handle)
+                continue
+            try:
+                ctypes.memmove(ptr, data, len(data))
+            finally:
+                _kernel32.GlobalUnlock(handle)
+            if _user32.SetClipboardData(fmt, handle):
+                restored += 1
+            else:
+                _kernel32.GlobalFree(handle)
+        return restored == len(snapshot)
+    finally:
+        _user32.CloseClipboard()
+
 
 def foreground_process_name() -> str:
     """返回前台窗口的进程名（如 notepad.exe），失败返回空串。"""
@@ -83,18 +209,41 @@ class SelectionListener:
         self._last_click_pos = (0, 0)
         self._debounce_until = 0.0
         self._suppressed = False
+        self._stopping = False
+        self._clipboard_owner = _create_clipboard_owner()
+        self._capture_threads: set[threading.Thread] = set()
+        self._restore_jobs: dict[
+            threading.Timer, tuple[list[tuple[int, bytes]], int]
+        ] = {}
 
     # ---------- 生命周期 ----------
 
     def start(self):
+        with self._lock:
+            self._stopping = False
         self._listener = mouse.Listener(on_move=self._on_move, on_click=self._on_click)
         self._listener.daemon = True
         self._listener.start()
         debug_log("mouse listener started")
 
     def stop(self):
+        with self._lock:
+            self._stopping = True
         if self._listener:
             self._listener.stop()
+        with self._lock:
+            threads = list(self._capture_threads)
+        for thread in threads:
+            thread.join(timeout=1.0)
+        with self._lock:
+            jobs = list(self._restore_jobs.items())
+            self._restore_jobs.clear()
+        for timer, (snapshot, sequence) in jobs:
+            timer.cancel()
+            _restore_clipboard(self._clipboard_owner, snapshot, sequence)
+        if self._clipboard_owner:
+            _user32.DestroyWindow(ctypes.c_void_p(self._clipboard_owner))
+            self._clipboard_owner = 0
 
     def set_suppressed(self, flag: bool):
         """暂停/恢复取词：OCR 框选期间拖拽不是划词，不能触发 Ctrl+C 捕获。"""
@@ -114,6 +263,8 @@ class SelectionListener:
         if button != mouse.Button.left:
             return
         with self._lock:
+            if self._stopping:
+                return
             if pressed:
                 now = time.time()
                 near = (abs(x - self._last_click_pos[0]) <= DOUBLE_CLICK_DIST
@@ -134,17 +285,32 @@ class SelectionListener:
             )
         debug_log(f"click release ({x},{y}) capture={should_capture}")
         if should_capture:
-            threading.Thread(target=self._capture, args=(x, y, False), daemon=True).start()
+            self._start_capture(x, y, False)
 
     # ---------- 取词（工作线程，可以慢慢等） ----------
 
     def capture_current_selection(self):
         """供热键调用：直接取词并直翻。"""
         with self._lock:
-            if self._suppressed:
-                debug_log("suppressed, hotkey capture skipped")
+            if self._stopping or self._suppressed:
+                debug_log("suppressed or stopping, hotkey capture skipped")
                 return
-        threading.Thread(target=self._capture, args=(*self._mouse.position, True), daemon=True).start()
+        self._start_capture(*self._mouse.position, True)
+
+    def _start_capture(self, x, y, direct):
+        def run():
+            try:
+                self._capture(x, y, direct)
+            finally:
+                with self._lock:
+                    self._capture_threads.discard(threading.current_thread())
+
+        thread = threading.Thread(target=run, daemon=True, name="picktrans-capture")
+        with self._lock:
+            if self._stopping:
+                return
+            self._capture_threads.add(thread)
+        thread.start()
 
     def _capture(self, x, y, direct):
         debug_log(f"capture begin at ({x},{y}) direct={direct}")
@@ -156,8 +322,8 @@ class SelectionListener:
             debug_log("debounced, skip")
             return
         with self._lock:
-            if self._suppressed:
-                debug_log("suppressed, skip")
+            if self._stopping or self._suppressed:
+                debug_log("suppressed or stopping, skip")
                 return
         self._debounce_until = now + DEBOUNCE_S
 
@@ -169,9 +335,13 @@ class SelectionListener:
                 debug_log("blacklisted, skip")
                 return
 
-        original = self._paste() or ""
-        self._copy_clear()
-        debug_log(f"clipboard cleared (original len={len(original)})")
+        original = _snapshot_and_clear_clipboard(self._clipboard_owner)
+        if original is None:
+            debug_log("clipboard backup failed, capture skipped")
+            return
+        debug_log(f"clipboard cleared (saved formats={len(original)})")
+
+        captured_sequence = _clipboard_sequence()
 
         # Ctrl+C 复制当前选区
         try:
@@ -180,7 +350,7 @@ class SelectionListener:
             debug_log("ctrl+c sent")
         except Exception as e:
             debug_log(f"ctrl+c failed: {e!r}")
-            self._schedule_restore(original, "")
+            self._schedule_restore(original, captured_sequence)
             return
 
         text = ""
@@ -190,9 +360,10 @@ class SelectionListener:
             cur = self._paste()
             if cur and cur.strip():
                 text = cur
+                captured_sequence = _clipboard_sequence()
                 break
         debug_log(f"poll done, text len={len(text)}")
-        self._schedule_restore(original, text)
+        self._schedule_restore(original, captured_sequence)
 
         text = text.strip()
         max_len = int(cfg.get("max_selection_len", 5000))
@@ -212,24 +383,17 @@ class SelectionListener:
                 time.sleep(0.05)
         return None
 
-    def _copy_clear(self):
-        try:
-            pyperclip.copy("")
-        except Exception:
-            pass
-
-    def _schedule_restore(self, original: str, captured: str):
+    def _schedule_restore(self, snapshot: list[tuple[int, bytes]], sequence: int):
         def restore():
-            cur = self._paste()
-            if cur is None:
-                return  # 读不到剪贴板状态，宁可不恢复也不能覆盖
-            # 剪贴板里已经不是取词写入的内容：说明用户之后自己复制了新内容，不覆盖
-            if cur.strip() and cur != captured:
-                debug_log("restore skipped: newer clipboard content")
-                return
-            if original:
-                try:
-                    pyperclip.copy(original)
-                except Exception:
-                    pass
-        threading.Timer(RESTORE_DELAY_S, restore).start()
+            try:
+                if not _restore_clipboard(self._clipboard_owner, snapshot, sequence):
+                    debug_log("restore skipped: newer clipboard content")
+            finally:
+                with self._lock:
+                    self._restore_jobs.pop(timer, None)
+
+        timer = threading.Timer(RESTORE_DELAY_S, restore)
+        timer.daemon = True
+        with self._lock:
+            self._restore_jobs[timer] = (snapshot, sequence)
+        timer.start()

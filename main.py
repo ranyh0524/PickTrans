@@ -87,19 +87,21 @@ class _ConfigView:
 class OcrBridge(QObject):
     """OCR 工作线程 -> 主线程的结果桥。"""
 
-    finishedOk = pyqtSignal(str, int, int)   # text, 中心点 x/y
-    finishedErr = pyqtSignal(str, int, int)
+    finishedOk = pyqtSignal(str, int, int, int)   # text, 中心点 x/y, 请求代次
+    finishedErr = pyqtSignal(str, int, int, int)
 
-    def recognize(self, png_bytes: bytes, cx: int, cy: int):
+    def recognize(self, png_bytes: bytes, cx: int, cy: int, generation: int):
         def work():
             try:
                 text = recognize_png(png_bytes)
                 if text:
-                    self.finishedOk.emit(text, cx, cy)
+                    self.finishedOk.emit(text, cx, cy, generation)
                 else:
-                    self.finishedErr.emit("未识别到文字，请框选包含清晰文字的区域。", cx, cy)
+                    self.finishedErr.emit(
+                        "未识别到文字，请框选包含清晰文字的区域。", cx, cy, generation
+                    )
             except Exception as e:
-                self.finishedErr.emit(str(e), cx, cy)
+                self.finishedErr.emit(str(e), cx, cy, generation)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -132,7 +134,7 @@ class AppController(QObject):
         self.cache = cache
         self.listener = listener
         self.cards: list[TranslationCard] = []
-        self._ocr_card: TranslationCard | None = None
+        self._ocr_generation = 0
         self.selector = OcrSelector()
         self.ocr_bridge = OcrBridge()
         self.selector.regionSelected.connect(self.on_ocr_region)
@@ -186,7 +188,7 @@ class AppController(QObject):
         try:
             _dlog("ocr requested")
             self.mini.dismiss()
-            self._ocr_card = self._acquire_card()
+            self._ocr_generation += 1
             if self.listener is not None:
                 self.listener.set_suppressed(True)
             self.selector.start()
@@ -211,33 +213,47 @@ class AppController(QObject):
             # 用副屏对象传全局坐标会偏移加倍，抓出纯黑图（副屏 OCR 必然失败）。
             pixmap = QGuiApplication.primaryScreen().grabWindow(0, x, y, w, h)
             png = image_to_png_bytes(pixmap.toImage())
-            self.ocr_bridge.recognize(png, x + w // 2, y + h // 2)
+            self.ocr_bridge.recognize(
+                png, x + w // 2, y + h // 2, self._ocr_generation
+            )
         except Exception as e:
             import traceback
             traceback.print_exc()
-            card = self._ocr_card or self._acquire_card()
-            self._ocr_card = None
-            card.show_failure("OCR", f"截屏失败：{e}", anchor=self._cascade(QPoint(x + 12, y + 12)))
+            self._acquire_card().show_failure(
+                "OCR", f"截屏失败：{e}", anchor=self._cascade(QPoint(x + 12, y + 12))
+            )
 
-    def on_ocr_ok(self, text: str, cx: int, cy: int):
+    def on_ocr_ok(self, text: str, cx: int, cy: int, generation: int):
+        if generation != self._ocr_generation:
+            return
         try:
             _dlog(f"ocr ok len={len(text)}")
-            card = self._ocr_card or self._acquire_card()
-            self._ocr_card = None
-            card.translate(text, anchor=self._cascade(QPoint(cx + 12, cy + 12)))
+            self._acquire_card().translate(
+                text, anchor=self._cascade(QPoint(cx + 12, cy + 12))
+            )
         except Exception:
             import traceback
             traceback.print_exc()
 
-    def on_ocr_err(self, message: str, cx: int, cy: int):
+    def on_ocr_err(self, message: str, cx: int, cy: int, generation: int):
+        if generation != self._ocr_generation:
+            return
         try:
             _dlog(f"ocr err: {message!r}")
-            card = self._ocr_card or self._acquire_card()
-            self._ocr_card = None
-            card.show_failure("OCR", message, anchor=self._cascade(QPoint(cx + 12, cy + 12)))
+            self._acquire_card().show_failure(
+                "OCR", message, anchor=self._cascade(QPoint(cx + 12, cy + 12))
+            )
         except Exception:
             import traceback
             traceback.print_exc()
+
+    def shutdown(self):
+        self._ocr_generation += 1
+        self.selector.hide()
+        if self.listener is not None:
+            self.listener.set_suppressed(False)
+        for card in self.cards:
+            card.shutdown()
 
 
 def main() -> int:
@@ -387,12 +403,22 @@ def main() -> int:
             lambda: _open_settings(config, cache, dialog_holder, app_icon(), on_settings_changed),
         )
 
-    exit_code = app.exec()
+    shutdown_done = False
 
-    cache.save()
-    listener.stop()
-    hotkey.stop()
-    ocr_hotkey.stop()
+    def _shutdown():
+        nonlocal shutdown_done
+        if shutdown_done:
+            return
+        shutdown_done = True
+        hotkey.stop()
+        ocr_hotkey.stop()
+        listener.stop()
+        controller.shutdown()
+        cache.save()
+
+    app.aboutToQuit.connect(_shutdown)
+    exit_code = app.exec()
+    _shutdown()
     return exit_code
 
 

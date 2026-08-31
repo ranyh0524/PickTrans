@@ -168,7 +168,7 @@ class _ResizeGrip(QSizeGrip):
 
 
 class TranslationCard(QWidget):
-    _richReady = pyqtSignal(str, str, dict)
+    _richReady = pyqtSignal(str, str, str, dict)
 
     def __init__(self, config, cache=None):
         super().__init__(
@@ -180,10 +180,12 @@ class TranslationCard(QWidget):
         self.config = config
         self.cache = cache
         self.worker = None
+        self._retired_workers: set[TranslateWorker] = set()
+        self._request_generation = 0
         self.current_text = ""
         self.current_target = "zh"
         self._result_text = ""
-        self._cache_key: tuple | None = None
+        self._cache_key: tuple[object, ...] | None = None
         self._drag_offset: QPoint | None = None
         self._auto_height = True
         self._minimized = False
@@ -291,6 +293,8 @@ class TranslationCard(QWidget):
     def translate(self, text: str, anchor: QPoint | None = None, force: bool = False):
         """开始一次新翻译；重复调用会取消上一次。force 时绕过缓存重新请求。"""
         _dlog(f"translate begin len={len(text)}")
+        self._request_generation += 1
+        generation = self._request_generation
         self.current_text = text
         self._result_text = ""
         source_lang = detect(text)
@@ -305,9 +309,11 @@ class TranslationCard(QWidget):
         self._show_at(anchor or QCursor.pos() + QPoint(18, 26))
         self._stop_worker()
 
-        model = self.config.get("model") or DEFAULTS["model"]
-        temperature = self.config.get("temperature", DEFAULTS["temperature"])
-        self._cache_key = (text, source_lang, self.current_target, model, temperature)
+        request_config = self.config.snapshot()
+        model = request_config.get("model") or DEFAULTS["model"]
+        temperature = request_config.get("temperature", DEFAULTS["temperature"])
+        api_base = request_config.get("api_base") or DEFAULTS["api_base"]
+        self._cache_key = (text, source_lang, self.current_target, model, temperature, api_base)
 
         cached = None
         if not force and self.cache is not None:
@@ -320,24 +326,37 @@ class TranslationCard(QWidget):
             self.retry_btn.setEnabled(True)
             self._set_status("完成 · 缓存", "done")
             if "$" in cached:
-                threading.Thread(target=self._render_rich, args=(cached,), daemon=True).start()
+                threading.Thread(
+                    target=self._render_rich, args=(cached, self._formula_color), daemon=True
+                ).start()
             self._reset_timer.start()
             if self.config.get("auto_copy"):
                 self._copy_result(quiet=True)
             return
 
         self._set_status("翻译中…", "running")
-        self.worker = TranslateWorker(self.config, text, source_lang, self.current_target)
-        self.worker.chunk.connect(self._on_chunk)
-        self.worker.finished_ok.connect(self._on_ok)
-        self.worker.failed.connect(self._on_fail)
-        self.worker.finished.connect(self._on_worker_finished)
-        self.worker.start()
+        worker = TranslateWorker(request_config, text, source_lang, self.current_target)
+        self.worker = worker
+        cache_key = self._cache_key
+        worker.chunk.connect(
+            lambda piece, w=worker, g=generation: self._on_chunk(w, g, piece)
+        )
+        worker.finished_ok.connect(
+            lambda full, w=worker, g=generation, key=cache_key:
+            self._on_ok(w, g, key, full)
+        )
+        worker.failed.connect(
+            lambda message, w=worker, g=generation: self._on_fail(w, g, message)
+        )
+        worker.finished.connect(lambda w=worker: self._on_worker_finished(w))
+        worker.start()
         _dlog("worker started")
 
     def show_failure(self, title: str, message: str, anchor: QPoint | None = None):
         """显示一条不发起翻译的错误信息（如 OCR 失败）。"""
         _dlog(f"show_failure {title}: {message[:80]!r}")
+        self._request_generation += 1
+        self._stop_worker()
         self.lang_label.setText(title)
         self.current_text = ""
         self._result_text = ""
@@ -358,6 +377,11 @@ class TranslationCard(QWidget):
         if event.key() == Qt.Key.Key_Escape:
             self.close_card()
         super().keyPressEvent(event)
+
+    def closeEvent(self, event):
+        # Alt+F4 等系统关闭路径也必须取消请求；卡片池通过 hide() 复用窗口。
+        event.ignore()
+        self.close_card()
 
     def resizeEvent(self, event):
         self._grip.move(self.width() - self._grip.width(), self.height() - self._grip.height())
@@ -414,8 +438,16 @@ class TranslationCard(QWidget):
             size = int(self.config.get("card_font_size", 14))
         except (TypeError, ValueError):
             size = 14
+        old_formula_color = getattr(self, "_formula_color", None)
         self._formula_color = THEMES.get(theme, THEMES["light"])["formula"]
         self.setStyleSheet(build_style(theme, size))
+        if (old_formula_color is not None and old_formula_color != self._formula_color
+                and self._result_text and "$" in self._result_text):
+            threading.Thread(
+                target=self._render_rich,
+                args=(self._result_text, self._formula_color),
+                daemon=True,
+            ).start()
 
     def _show_at(self, anchor: QPoint):
         self._set_minimized(False)
@@ -451,35 +483,46 @@ class TranslationCard(QWidget):
 
     # ---------- 工作线程回调 ----------
 
-    def _on_chunk(self, piece: str):
+    def _is_current_request(self, worker: TranslateWorker, generation: int) -> bool:
+        return worker is self.worker and generation == self._request_generation
+
+    def _on_chunk(self, worker: TranslateWorker, generation: int, piece: str):
+        if not self._is_current_request(worker, generation):
+            return
         _dlog(f"chunk {len(piece)} chars")
         self.target_box.moveCursor(QTextCursor.MoveOperation.End)
         self.target_box.insertPlainText(piece)
         self.target_box.moveCursor(QTextCursor.MoveOperation.End)
         self._reset_timer.start()
 
-    def _on_ok(self, full: str):
+    def _on_ok(self, worker: TranslateWorker, generation: int,
+               cache_key: tuple[object, ...] | None, full: str):
+        if not self._is_current_request(worker, generation):
+            return
         _dlog("finished ok")
         self._result_text = full
-        if self.cache is not None and self._cache_key is not None:
-            self.cache.put(*self._cache_key, full)
+        if self.cache is not None and cache_key is not None:
+            self.cache.put(*cache_key, full)
         self._set_status("完成", "done")
         self.copy_btn.setEnabled(True)
         self.retry_btn.setEnabled(True)
         if "$" in full:
-            threading.Thread(target=self._render_rich, args=(full,), daemon=True).start()
+            threading.Thread(
+                target=self._render_rich, args=(full, self._formula_color), daemon=True
+            ).start()
         self._reset_timer.start()
         if self.config.get("auto_copy"):
             self._copy_result(quiet=True)
 
-    def _render_rich(self, full: str):
-        rich = build_rich_html(full, self._formula_color)
+    def _render_rich(self, full: str, color: str):
+        rich = build_rich_html(full, color)
         if rich:
-            self._richReady.emit(full, rich[0], rich[1])
+            self._richReady.emit(full, color, rich[0], rich[1])
 
-    def _apply_rich(self, token: str, html_text: str, images: dict):
-        if token != self._result_text:
-            return  # 已发起新翻译，丢弃过期渲染
+    def _apply_rich(self, token: str, color: str, html_text: str,
+                    images: dict[str, bytes]):
+        if token != self._result_text or color != self._formula_color:
+            return  # 已发起新翻译或切换主题，丢弃过期渲染
         doc = self.target_box.document()
         for name, png in images.items():
             doc.addResource(
@@ -490,18 +533,20 @@ class TranslationCard(QWidget):
         self.target_box.setHtml(html_text)
         self._reset_timer.start()
 
-    def _on_fail(self, message: str):
+    def _on_fail(self, worker: TranslateWorker, generation: int, message: str):
+        if not self._is_current_request(worker, generation):
+            return
         _dlog(f"failed: {message!r}")
         self._set_status("失败", "error")
         self.target_box.setPlainText(f"翻译出错：{message}\n\n请检查设置中的 API 地址、密钥与模型名称。")
         self.retry_btn.setEnabled(True)
 
-    def _on_worker_finished(self):
-        worker = self.sender()
+    def _on_worker_finished(self, worker: TranslateWorker):
         _dlog("worker thread finished")
         if worker is self.worker:
             self.worker = None
         if worker is not None:
+            self._retired_workers.discard(worker)
             worker.deleteLater()
 
     def _set_status(self, text: str, state: str):
@@ -537,8 +582,18 @@ class TranslationCard(QWidget):
             worker.failed.disconnect()
         except TypeError:
             pass
+        self._retired_workers.add(worker)
         worker.cancel()
-        worker.finished.connect(worker.deleteLater)
+
+    def shutdown(self):
+        """取消并等待全部活动请求，避免退出时销毁仍运行的 QThread。"""
+        self._request_generation += 1
+        self._stop_worker()
+        workers = list(self._retired_workers)
+        for worker in workers:
+            worker.cancel()
+        for worker in workers:
+            worker.wait()
 
     # ---------- 拖动（标题栏/空白区域，文本框内不影响选择） ----------
 

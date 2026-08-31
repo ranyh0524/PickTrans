@@ -38,8 +38,17 @@ class TrayIcon(QSystemTrayIcon):
         self.activated.connect(self._on_activated)
 
     def _on_toggle(self, checked: bool):
-        self.config.set("selection_enabled", checked)
-        self.config.save()
+        previous = bool(self.config.get("selection_enabled"))
+        try:
+            self.config.update({"selection_enabled": checked}, persist=True)
+        except OSError as e:
+            self.toggle_action.blockSignals(True)
+            self.toggle_action.setChecked(previous)
+            self.toggle_action.blockSignals(False)
+            self.showMessage(
+                "PickTrans", f"保存设置失败：{e}",
+                QSystemTrayIcon.MessageIcon.Warning, 5000,
+            )
         self._sync_text()
 
     def _sync_text(self):

@@ -5,17 +5,23 @@
 """
 import html
 import re
+import threading
 
-_FORMULA_RE = re.compile(r"\$\$(.+?)\$\$|\$(.+?)\$", re.S)
+_FORMULA_RE = re.compile(r"(?<!\\)\$\$(.+?)(?<!\\)\$\$|(?<!\\)\$(.+?)(?<!\\)\$", re.S)
+_CURRENCY_AMOUNT_RE = re.compile(r"\s*\d+(?:[.,]\d+)?\s*")
+_MAX_CACHE_ENTRIES = 256
 
-_png_cache: dict[str, bytes] = {}
+_png_cache: dict[tuple[str, str], bytes] = {}
+_cache_lock = threading.Lock()
 
 
 def render_formula_png(latex: str, color: str = "#171C26") -> bytes | None:
     """把公式渲染成透明背景 PNG；失败返回 None（调用方保留原文）。"""
     key = (latex, color)
-    if key in _png_cache:
-        return _png_cache[key]
+    with _cache_lock:
+        cached = _png_cache.get(key)
+    if cached is not None:
+        return cached
     try:
         import io
         import matplotlib
@@ -31,7 +37,10 @@ def render_formula_png(latex: str, color: str = "#171C26") -> bytes | None:
         png = buf.getvalue()
     except Exception:
         return None
-    _png_cache[key] = png
+    with _cache_lock:
+        _png_cache[key] = png
+        while len(_png_cache) > _MAX_CACHE_ENTRIES:
+            del _png_cache[next(iter(_png_cache))]
     return png
 
 
@@ -41,12 +50,19 @@ def build_rich_html(text: str, color: str = "#171C26") -> tuple[str, dict[str, b
     images: dict[str, bytes] = {}
     pos = 0
     for m in _FORMULA_RE.finditer(text):
+        latex = m.group(1) or m.group(2)
+        is_inline = m.group(1) is None
+        # `$5, $10`、`$5-$10` 等金额包含两个美元符号，不能当成公式。
+        if is_inline and (
+            _CURRENCY_AMOUNT_RE.fullmatch(latex)
+            or (latex[:1].isdigit() and text[m.end():m.end() + 1].isdigit())
+        ):
+            continue
         if m.start() > pos:
             parts.append(html.escape(text[pos:m.start()]).replace("\n", "<br>"))
-        latex = m.group(1) or m.group(2)
         png = render_formula_png(latex, color)
         if png is None:
-            parts.append(html.escape(f"${latex}$"))
+            parts.append(html.escape(m.group(0)))
         else:
             name = f"formula{len(images)}"
             images[name] = png

@@ -1,4 +1,7 @@
 """OpenAI 兼容流式翻译客户端（QThread + 信号）。"""
+import threading
+from typing import Any
+
 from PyQt6.QtCore import QThread, pyqtSignal
 from openai import OpenAI
 
@@ -72,25 +75,45 @@ class TranslateWorker(QThread):
     finished_ok = pyqtSignal(str)
     failed = pyqtSignal(str)
 
-    def __init__(self, config, text: str, source_lang: str, target_lang: str, parent=None):
+    def __init__(self, config: dict[str, Any], text: str, source_lang: str,
+                 target_lang: str, parent=None):
         super().__init__(parent)
         self._config = config
         self._text = text
         self._source_lang = source_lang
         self._target_lang = target_lang
-        self._cancelled = False
+        self._cancelled = threading.Event()
+        self._resource_lock = threading.Lock()
+        self._client = None
+        self._stream = None
 
     def cancel(self):
-        self._cancelled = True
+        self._cancelled.set()
+        with self._resource_lock:
+            stream, client = self._stream, self._client
+        for resource in (stream, client):
+            if resource is not None:
+                try:
+                    resource.close()
+                except Exception:
+                    pass
 
     def run(self):
+        client = None
+        stream = None
         try:
+            if self._cancelled.is_set():
+                return
             client = OpenAI(
                 base_url=self._config.get("api_base") or DEFAULTS["api_base"],
                 api_key=self._config.get("api_key"),
                 timeout=60,
                 max_retries=1,
             )
+            with self._resource_lock:
+                self._client = client
+            if self._cancelled.is_set():
+                return
             stream = client.chat.completions.create(
                 model=self._config.get("model") or DEFAULTS["model"],
                 temperature=float(self._config.get("temperature", 0.3)),
@@ -103,10 +126,14 @@ class TranslateWorker(QThread):
                     {"role": "user", "content": self._text},
                 ],
             )
+            with self._resource_lock:
+                self._stream = stream
+            if self._cancelled.is_set():
+                return
             parts = []
             with stream:
                 for event in stream:
-                    if self._cancelled:
+                    if self._cancelled.is_set():
                         return
                     if not event.choices:
                         continue
@@ -114,9 +141,19 @@ class TranslateWorker(QThread):
                     if delta and delta.content:
                         parts.append(delta.content)
                         self.chunk.emit(delta.content)
-            if self._cancelled:
+            if self._cancelled.is_set():
                 return
             self.finished_ok.emit("".join(parts))
         except Exception as e:
-            if not self._cancelled:
+            if not self._cancelled.is_set():
                 self.failed.emit(_short_error(e))
+        finally:
+            with self._resource_lock:
+                self._stream = None
+                self._client = None
+            for resource in (stream, client):
+                if resource is not None:
+                    try:
+                        resource.close()
+                    except Exception:
+                        pass

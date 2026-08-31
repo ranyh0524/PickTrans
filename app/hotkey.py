@@ -25,21 +25,28 @@ def _parse_combo(combo: str):
     """'ctrl+alt+t' -> (modifiers, vk)；无法解析返回 None。"""
     mods = 0
     vk = None
+    seen = set()
     for token in combo.lower().replace(" ", "").split("+"):
-        if not token:
-            continue
+        if not token or token in seen:
+            return None
+        seen.add(token)
         if token in MOD_MAP:
             mods |= MOD_MAP[token]
-        elif token in VK_SPECIAL:
-            vk = VK_SPECIAL[token]
+            continue
+        candidate = None
+        if token in VK_SPECIAL:
+            candidate = VK_SPECIAL[token]
         elif len(token) == 1 and token.isalnum():
-            vk = ord(token.upper())
+            candidate = ord(token.upper())
         elif token.startswith("f") and token[1:].isdigit():
             n = int(token[1:])
             if 1 <= n <= 24:
-                vk = 0x6F + n  # VK_F1 = 0x70
+                candidate = 0x6F + n  # VK_F1 = 0x70
         elif token == "insert":
-            vk = 0x2D
+            candidate = 0x2D
+        if candidate is None or vk is not None:
+            return None
+        vk = candidate
     if vk is None or not mods:
         return None
     return mods, vk
