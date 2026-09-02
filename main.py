@@ -163,13 +163,17 @@ class AppController(QObject):
 
     def on_captured(self, x: int, y: int, text: str, direct: bool):
         try:
+            # 信号里的 x/y 是 pynput 的物理像素坐标，而 Qt 的 move()/screenAt()
+            # 使用逻辑像素；缩放屏（DPR≠1，如主屏 125%）上直接用会按倍数偏移。
+            # QCursor.pos() 由 Qt 换算，天然与 move() 同一坐标系。
+            cursor = QCursor.pos()
             if direct:
                 self.mini.dismiss()
                 self._acquire_card().translate(
-                    text, anchor=self._cascade(QPoint(x + 18, y + 26))
+                    text, anchor=self._cascade(cursor + QPoint(18, 26))
                 )
             else:
-                self.mini.popup_at(x, y, text)
+                self.mini.popup_at(cursor.x(), cursor.y(), text)
         except Exception:
             import traceback
             traceback.print_exc()
