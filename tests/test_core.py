@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from app import config as config_module
 from app.cache import _key
 from app.config import Config, DEFAULTS
-from app.formula import build_rich_html
+from app.formula import build_rich_html, has_formula, render_formula_png, _to_mathtext
 from app.hotkey import _parse_combo
 from app.updater import _validated_web_url
 
@@ -88,6 +88,50 @@ class FormulaTests(unittest.TestCase):
 
     def test_escaped_dollars_are_left_as_text(self):
         self.assertIsNone(build_rich_html(r"Price: \$5 and \$10"))
+
+    def test_paren_delimiters_are_rendered(self):
+        with patch("app.formula.render_formula_png", return_value=b"png"):
+            rich = build_rich_html(r"设 \(x_i\) 与 \[y^2\] 成立")
+        self.assertIsNotNone(rich)
+        html_text, images = rich
+        self.assertEqual(len(images), 2)
+        self.assertIn('<img src="formula0">', html_text)
+        self.assertIn('<img src="formula1">', html_text)
+
+    def test_has_formula_covers_all_delimiters(self):
+        self.assertTrue(has_formula("inline $x_i$"))
+        self.assertTrue(has_formula(r"inline \(x_i\)"))
+        self.assertTrue(has_formula(r"block \[y^2\]"))
+        self.assertFalse(has_formula("no math here"))
+        self.assertFalse(has_formula(r"escaped \$5 only"))
+        # has_formula 只是“可能含公式”的廉价触发器；金额由 build_rich_html 最终过滤
+        self.assertIsNone(build_rich_html("Prices: $5, $10"))
+
+    def test_frac_and_style_are_normalized_for_mathtext(self):
+        self.assertEqual(_to_mathtext(r"\frac12"), r"\frac{1}{2}")
+        self.assertEqual(_to_mathtext(r"\tfrac{1}{2}"), r"\frac{1}{2}")
+        self.assertEqual(_to_mathtext(r"\dfrac{a}{b}"), r"\frac{a}{b}")
+        self.assertEqual(_to_mathtext(r"\displaystyle \sum_i"), r"\sum_i")
+        # 已是花括号形式的不被破坏
+        self.assertEqual(_to_mathtext(r"\frac{1}{2}"), r"\frac{1}{2}")
+        # 命令作参数的简写不误伤，保持原样交给原文回退
+        self.assertEqual(_to_mathtext(r"\frac\alpha\beta"), r"\frac\alpha\beta")
+
+    def test_cjk_formula_falls_back_instead_of_boxes(self):
+        # mathtext 无中文字形：含中文的公式体直接返回 None，走等宽原文回退
+        self.assertIsNone(render_formula_png(r"E=\text{能量}"))
+
+    def test_unsupported_formula_falls_back_to_monospace(self):
+        def fake_render(latex, color="#171C26"):
+            return None if "begin" in latex else b"png"
+        with patch("app.formula.render_formula_png", side_effect=fake_render):
+            rich = build_rich_html(r"能量 $E=mc^2$，且 $\begin{pmatrix}a\\b\end{pmatrix}$ 结束")
+        self.assertIsNotNone(rich)
+        html_text, images = rich
+        self.assertEqual(len(images), 1)  # 只有 E=mc^2 渲染成图
+        self.assertIn('<img src="formula0">', html_text)
+        self.assertIn("Consolas", html_text)  # 矩阵退化为等宽原文
+        self.assertIn("begin{pmatrix}", html_text)
 
 
 class HotkeyTests(unittest.TestCase):

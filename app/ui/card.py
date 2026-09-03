@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
 
 from ..config import DEFAULTS
 from ..detector import detect, target_for, LANG_NAMES
-from ..formula import build_rich_html
+from ..formula import build_rich_html, has_formula
 from ..translator import TranslateWorker
 
 DEBUG = os.environ.get("PICKTRANS_DEBUG") == "1"
@@ -325,7 +325,7 @@ class TranslationCard(QWidget):
             self.copy_btn.setEnabled(True)
             self.retry_btn.setEnabled(True)
             self._set_status("完成 · 缓存", "done")
-            if "$" in cached:
+            if has_formula(cached):
                 threading.Thread(
                     target=self._render_rich, args=(cached, self._formula_color), daemon=True
                 ).start()
@@ -442,7 +442,7 @@ class TranslationCard(QWidget):
         self._formula_color = THEMES.get(theme, THEMES["light"])["formula"]
         self.setStyleSheet(build_style(theme, size))
         if (old_formula_color is not None and old_formula_color != self._formula_color
-                and self._result_text and "$" in self._result_text):
+                and self._result_text and has_formula(self._result_text)):
             threading.Thread(
                 target=self._render_rich,
                 args=(self._result_text, self._formula_color),
@@ -506,7 +506,7 @@ class TranslationCard(QWidget):
         self._set_status("完成", "done")
         self.copy_btn.setEnabled(True)
         self.retry_btn.setEnabled(True)
-        if "$" in full:
+        if has_formula(full):
             threading.Thread(
                 target=self._render_rich, args=(full, self._formula_color), daemon=True
             ).start()

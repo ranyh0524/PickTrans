@@ -1,27 +1,62 @@
 """LaTeX 公式渲染为 PNG（matplotlib mathtext，无需本地 TeX 安装）。
 
-译文可能含大模型恢复的 $...$ / $$...$$ 公式；卡片在完成时把公式换成
-渲染图片，呈现与论文一致的上下标视觉形式。不支持的语法保留原文。
+译文可能含大模型恢复的公式；卡片在完成时把公式换成渲染图片，呈现与论文
+一致的上下标视觉形式。支持的定界符：$...$、$$...$$、\\(...\\)、\\[...\\]。
+mathtext 无法渲染的写法（\\begin{...} 环境、多行、含中文的 \\text 等）保留
+等宽字体的原文，而不是显示成一堆方框。
 """
 import html
 import re
 import threading
 
+# $...$ / $$...$$（$$ 优先匹配）；(?<!\\) 避免把转义的 \$ 当成定界符
 _FORMULA_RE = re.compile(r"(?<!\\)\$\$(.+?)(?<!\\)\$\$|(?<!\\)\$(.+?)(?<!\\)\$", re.S)
+# 很多模型用 \(...\)（行内）和 \[...\]（独立）而非美元符号
+_INLINE_PAREN_RE = re.compile(r"\\\((.+?)\\\)", re.S)
+_DISPLAY_PAREN_RE = re.compile(r"\\\[(.+?)\\\]", re.S)
 _CURRENCY_AMOUNT_RE = re.compile(r"\s*\d+(?:[.,]\d+)?\s*")
+# mathtext 只有西文字形：公式体含中日韩/全角字符时若强渲染会得到方框，改走原文回退
+_CJK_RE = re.compile(r"[\u3000-\u303f\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]")
 _MAX_CACHE_ENTRIES = 256
 
 _png_cache: dict[tuple[str, str], bytes] = {}
 _cache_lock = threading.Lock()
 
 
+def _normalize_delims(text: str) -> str:
+    """把 \\(...\\)、\\[...\\] 统一成 $...$、$$...$$，下游只需处理一种定界符。"""
+    text = _DISPLAY_PAREN_RE.sub(lambda m: "$$" + m.group(1) + "$$", text)
+    text = _INLINE_PAREN_RE.sub(lambda m: "$" + m.group(1) + "$", text)
+    return text
+
+
+def has_formula(text: str) -> bool:
+    """粗判文本是否可能含公式（含 \\( \\) / \\[ \\] 定界符），用于卡片触发富文本渲染。"""
+    return _FORMULA_RE.search(_normalize_delims(text)) is not None
+
+
+def _to_mathtext(latex: str) -> str:
+    """把常见但 mathtext 不支持的写法归一化到它能渲染的子集，不改变数学语义。"""
+    s = latex.strip()
+    # \dfrac/\tfrac -> \frac（mathtext 支持 \frac、\dfrac，但不支持 \tfrac）
+    s = re.sub(r"\\[dt]frac\b", r"\\frac", s)
+    # 去掉 mathtext 不认的字号命令（对其渲染无实际影响）
+    s = re.sub(r"\\(?:display|text|script|scriptscript)style\b\s*", "", s)
+    # \frac12 -> \frac{1}{2}：两个单字符参数补花括号；已带 {} 或以命令(\alpha)作参数的跳过
+    s = re.sub(r"\\frac\s*([^\s{}\\])\s*([^\s{}\\])", r"\\frac{\1}{\2}", s)
+    return s
+
+
 def render_formula_png(latex: str, color: str = "#171C26") -> bytes | None:
-    """把公式渲染成透明背景 PNG；失败返回 None（调用方保留原文）。"""
+    """把公式渲染成透明背景 PNG；不支持/失败返回 None（调用方保留原文）。"""
+    if _CJK_RE.search(latex):
+        return None  # 无中文字形，强渲染是方框，交给原文回退
     key = (latex, color)
     with _cache_lock:
         cached = _png_cache.get(key)
     if cached is not None:
         return cached
+    body = _to_mathtext(latex)
     try:
         import io
         import matplotlib
@@ -31,7 +66,7 @@ def render_formula_png(latex: str, color: str = "#171C26") -> bytes | None:
 
         fig = Figure(dpi=100)
         FigureCanvasAgg(fig)
-        fig.text(0, 0, f"${latex}$", fontsize=12, color=color)
+        fig.text(0, 0, f"${body}$", fontsize=12, color=color)
         buf = io.BytesIO()
         fig.savefig(buf, format="png", transparent=True, bbox_inches="tight", pad_inches=0.03)
         png = buf.getvalue()
@@ -44,8 +79,14 @@ def render_formula_png(latex: str, color: str = "#171C26") -> bytes | None:
     return png
 
 
+def _raw_formula_html(raw: str) -> str:
+    """渲染不了时，用等宽字体展示原始 LaTeX，看起来像公式而非乱码。"""
+    return f'<span style="font-family:Consolas,\'Courier New\',monospace;">{html.escape(raw)}</span>'
+
+
 def build_rich_html(text: str, color: str = "#171C26") -> tuple[str, dict[str, bytes]] | None:
-    """按公式切分文本，生成卡片 HTML 与图片资源表；无公式返回 None。"""
+    """按公式切分文本，生成卡片 HTML 与图片资源表；无可渲染公式返回 None。"""
+    text = _normalize_delims(text)
     parts: list[str] = []
     images: dict[str, bytes] = {}
     pos = 0
@@ -62,7 +103,7 @@ def build_rich_html(text: str, color: str = "#171C26") -> tuple[str, dict[str, b
             parts.append(html.escape(text[pos:m.start()]).replace("\n", "<br>"))
         png = render_formula_png(latex, color)
         if png is None:
-            parts.append(html.escape(m.group(0)))
+            parts.append(_raw_formula_html(m.group(0)))
         else:
             name = f"formula{len(images)}"
             images[name] = png

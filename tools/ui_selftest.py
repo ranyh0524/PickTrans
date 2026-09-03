@@ -32,9 +32,12 @@ def check(name, ok, detail=""):
     print(f"{'PASS' if ok else 'FAIL'}  {name}  {detail}", flush=True)
 
 
-def corner_transparent(image: QImage, size: int) -> bool:
-    """四角 (2,2) 处应为透明或接近背景，圆角半径大于 2px 即可判定。"""
-    corners = [(2, 2), (size - 3, 2), (2, size - 3), (size - 3, size - 3)]
+def corner_transparent(image: QImage) -> tuple:
+    """四角 (2,2) 处应为透明或接近背景，圆角半径大于 2px 即可判定。
+    按图片真实像素尺寸取角——grab() 返回的是按 devicePixelRatio 缩放的物理分辨率图，
+    DPR≠1（如 125%）时若按逻辑尺寸取角会落到不透明的按钮内部而误判。"""
+    w, h = image.width(), image.height()
+    corners = [(2, 2), (w - 3, 2), (2, h - 3), (w - 3, h - 3)]
     alphas = [image.pixelColor(x, y).alpha() for x, y in corners]
     return all(a < 200 for a in alphas), alphas
 
@@ -60,7 +63,7 @@ def main():
     pix.save(path)
     img = pix.toImage()
     check("mini.size=26", mini.width() == 26 and mini.height() == 26, f"{mini.width()}x{mini.height()}")
-    ok, alphas = corner_transparent(img, 26)
+    ok, alphas = corner_transparent(img)
     check("mini.rounded", ok, f"corner alphas={alphas}")
     # 必须有不透明的蓝色背景：统计全图蓝色像素，
     # 不能只取中心点——中心恰好是白色「译」字
